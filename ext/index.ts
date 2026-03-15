@@ -329,7 +329,7 @@ function installTabBarWidget(ctx: ExtensionContext): void {
       });
       const sep = blueDim(" · ");
       const left = " " + tealDim("amux") + "  " + tabs.join(sep);
-      const hint = activeName ? grayDim("⌥K kill") : "";
+      const hint = activeName ? grayDim("⌥C interrupt · ⌥K kill") : "";
       const leftWidth = visibleWidth(left);
       const hintWidth = visibleWidth(hint);
       const gap = Math.max(1, width - leftWidth - hintWidth - 1);
@@ -487,6 +487,29 @@ export default function (pi: ExtensionAPI) {
       amuxAsync([name, "kill"]).catch(() => {});
       hideTrail(ctx);
       ctx.ui.notify(`killed ${name}`, "info");
+    },
+  });
+
+  // --- ⌥c send Ctrl-C to trailed panel ---
+
+  pi.registerShortcut(Key.alt("c"), {
+    description: "Send Ctrl-C to the currently trailed amux panel",
+    handler: async (ctx) => {
+      if (!trailPanel) {
+        ctx.ui.notify("No panel being trailed", "info");
+        return;
+      }
+      amuxAsync([trailPanel, "send-keys", "C-c", "-t0"]).catch(() => {});
+    },
+  });
+
+  // --- ⌥d send Ctrl-D to trailed panel ---
+
+  pi.registerShortcut(Key.alt("d"), {
+    description: "Send Ctrl-D to the currently trailed amux panel",
+    handler: async (ctx) => {
+      if (!trailPanel) return;
+      amuxAsync([trailPanel, "send-keys", "C-d", "-t0"]).catch(() => {});
     },
   });
 
