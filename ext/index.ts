@@ -550,25 +550,23 @@ export default function (pi: ExtensionAPI) {
     },
 
     async execute(_toolCallId, params) {
-      const { name, command, timeout } = params;
-      const t = timeout ?? 5;
+      const { name, command } = params;
 
-      // Auto-trail this panel so output is visible while running
+      // Fire command without blocking — trailing widget shows live output
+      await amuxFireAndForget(name, command);
+
+      // Auto-trail this panel
       if (lastCtx?.hasUI) {
         showTrail(lastCtx, name);
       }
 
-      const result = await amuxAsync([name, "shell", command, `-t${t}`], t + 5);
-      const timedOut = result.stdout.includes("still running");
-
-      // If timed out, keep trail open — panel is still producing output
-      if (timedOut && lastCtx?.hasUI) {
-        showTrail(lastCtx, name);
-      }
+      // Brief pause then snapshot for LLM context
+      await new Promise((r) => setTimeout(r, 500));
+      const snap = await amuxAsync([name, "read"]);
 
       return {
-        content: [{ type: "text", text: result.stdout || "(no output)" }],
-        details: { panel: name, command, exitCode: result.exitCode, timedOut },
+        content: [{ type: "text", text: snap.stdout || `started in panel ${name}` }],
+        details: { panel: name, command },
       };
     },
   });
@@ -651,11 +649,15 @@ export default function (pi: ExtensionAPI) {
     },
 
     async execute(_toolCallId, params) {
-      const { name, keys, timeout } = params;
-      const t = timeout ?? 5;
-      const result = await amuxAsync([name, "send-keys", ...keys, `-t${t}`], t + 5);
+      const { name, keys } = params;
+      // Send keys without blocking
+      await amuxAsync([name, "send-keys", ...keys, "-t0"], 5);
+
+      // Brief pause then snapshot
+      await new Promise((r) => setTimeout(r, 500));
+      const snap = await amuxAsync([name, "read"]);
       return {
-        content: [{ type: "text", text: result.stdout || "(no output)" }],
+        content: [{ type: "text", text: snap.stdout || "(no output)" }],
         details: { panel: name, keys },
       };
     },
