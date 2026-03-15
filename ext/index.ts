@@ -430,17 +430,9 @@ export default function (pi: ExtensionAPI) {
       );
     }
 
-    // Initialize tab bar — auto-trail hot panel if any
-    const existing = discoverAllPanels();
-    const hot = existing.find((p) => p.hot);
-    if (hot) {
-      showTrail(ctx, hot.name);
-    } else if (existing.length > 0) {
-      showTrail(ctx, existing[0].name);
-    } else {
-      refreshTabBar();
-      startTrailRefresh(ctx);
-    }
+    // Show tab bar (collapsed — no panel trailed) if panels exist
+    refreshTabBar();
+    startTrailRefresh(ctx);
   });
   pi.on("session_switch", (_event, ctx) => { lastCtx = ctx; startWatching(ctx); });
   pi.on("session_shutdown", () => { stopWatching(); stopTrailRefresh(); });
