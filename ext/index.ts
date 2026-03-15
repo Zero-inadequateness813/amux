@@ -280,26 +280,23 @@ function installTabBarWidget(ctx: ExtensionContext): void {
       const cwd = normalizePath(process.cwd());
 
       // Tab bar — "Amux" label, tabs separated by ·
-      // States: trailed (blue bg) | blinking (reverse) | hot | stale (very dim) | normal (dim)
+      // States: trailed (blue bg) | fresh output (bright) | hot | stale (gray) | normal (dim)
       const now = Date.now();
       const tabs = all.map((p, i) => {
         const n = i + 1;
         const isStale = p.lastActivityMs > 0 && (now - p.lastActivityMs) > STALE_MS;
-        const isBlinking = (panelBlinkUntil[p.name] ?? 0) > now;
-        // Blink uses a 500ms toggle — on/off/on/off over the 2s window
-        const blinkOn = isBlinking && (Math.floor((now - (now % 500)) / 500) % 2 === 0);
+        const hasFreshOutput = (panelBlinkUntil[p.name] ?? 0) > now;
 
         if (p.name === activeName) {
-          // Trailed: blue bg, black text
           const label = n <= 9 ? ` ⌥${n} ${p.name} ` : ` ${p.name} `;
           return blueBgBlack(label);
         }
 
         const key = n <= 9 ? grayDim(`⌥${n} `) : "";
 
-        if (blinkOn) {
-          // Blink: reverse video blue — eye-catching
-          return key + `\x1b[7;34m ${p.name} ${RESET}`;
+        if (hasFreshOutput) {
+          // Fresh output: bright blue (light/bold) — subtle attention
+          return key + `\x1b[94;1m${p.name}${RESET}`;
         }
         if (p.hot) {
           return key + blueFg(p.name);
