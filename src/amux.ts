@@ -505,10 +505,6 @@ function streamFor(
       if (line.trim()) process.stdout.write(line + "\n");
     }
 
-    if (timedOut && allData.length > 0) {
-      saveTimeoutLog(allData, name, "stream");
-    }
-
     cleanup();
     return timedOut;
   } catch (e) {

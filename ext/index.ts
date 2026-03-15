@@ -46,6 +46,16 @@ function amux(args: string[], timeout = 10): { stdout: string; exitCode: number 
   };
 }
 
+/** Fire a command into a panel without waiting for output. */
+function amuxFireAndForget(name: string, command: string): void {
+  // Use -t0 so it sends the command and returns immediately
+  spawnSync(amuxBin(), [name, "shell", command, "-t0"], {
+    encoding: "utf-8",
+    timeout: 5000,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+}
+
 // -- panel discovery from filesystem ------------------------------------------
 
 interface PanelState {
@@ -572,10 +582,12 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      // /amux <shell command> — run in a "shell" panel
+      // /amux <shell command> — fire into "shell" panel, show viewer
       if (sub) {
-        const result = amux(["shell", "shell", sub, "-t5"], 15);
-        ctx.ui.notify(result.stdout.trim() || "(no output)", result.exitCode === 0 ? "info" : "error");
+        amuxFireAndForget("shell", sub);
+        const all = discoverAllPanels();
+        const idx = all.findIndex((p) => p.name === "shell");
+        showPanelViewer(ctx, idx >= 0 ? idx : 0);
         return;
       }
 
