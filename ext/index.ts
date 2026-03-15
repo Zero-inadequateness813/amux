@@ -3,7 +3,8 @@
  *
  * Tools for running background tasks in named tmux panels.
  * Status bar shows active panels with pulsing on live output.
- * ⌥1..9 opens panel viewer overlay.
+ * ⌥1..9 toggles inline trailing widget for panel output (max 6 lines).
+ * ⌥k kills the currently trailed panel.
  * Activity detection via fs.watch on ~/.amux/panels/*.log.
  */
 
@@ -21,6 +22,8 @@ import type { FSWatcher } from "node:fs";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PANEL_DIR = join(homedir(), ".amux", "panels");
 const HOT_MS = 5000;
+const TRAIL_LINES = 6;
+const TRAIL_REFRESH_MS = 1000;
 
 // -- amux CLI helper ----------------------------------------------------------
 
@@ -48,7 +51,6 @@ function amux(args: string[], timeout = 10): { stdout: string; exitCode: number 
 
 /** Fire a command into a panel without waiting for output. */
 function amuxFireAndForget(name: string, command: string): void {
-  // Use -t0 so it sends the command and returns immediately
   spawnSync(amuxBin(), [name, "shell", command, "-t0"], {
     encoding: "utf-8",
     timeout: 5000,
@@ -94,8 +96,8 @@ function normalizePath(p: string): string {
 }
 
 interface ScopedPanels {
-  local: PanelState[];   // panels created in cwd
-  others: PanelState[];  // panels from other directories
+  local: PanelState[];
+  others: PanelState[];
 }
 
 function scopePanels(cwd: string): ScopedPanels {
@@ -182,95 +184,107 @@ function stopWatching(): void {
   if (cooldownTimer) { clearTimeout(cooldownTimer); cooldownTimer = null; }
 }
 
-// -- panel viewer overlay -----------------------------------------------------
+// -- trailing widget ----------------------------------------------------------
+//
+// Non-blocking inline widget above the editor showing tab headers + last N
+// lines of the selected panel. Toggled on/off via ⌥1-9 hotkeys.
+// Auto-shown when amux_shell starts a new task.
 
-function showPanelViewer(ctx: ExtensionContext, panelIndex: number): void {
-  if (!ctx.hasUI) return;
-  const all = discoverAllPanels();
-  if (all.length === 0) { ctx.ui.notify("No amux panels", "info"); return; }
+let trailPanel: string | null = null;
+let trailRefreshTimer: ReturnType<typeof setInterval> | null = null;
 
-  const startIdx = Math.min(panelIndex, all.length - 1);
+function showTrail(ctx: ExtensionContext, panelName: string): void {
+  trailPanel = panelName;
+  startTrailRefresh(ctx);
+  renderTrailWidget(ctx);
+}
 
-  ctx.ui.custom<void>((tui, theme, _kb, done) => {
-    let selectedIdx = startIdx;
-    let content = "";
-    let refreshTimer: ReturnType<typeof setInterval> | null = null;
+function hideTrail(ctx: ExtensionContext): void {
+  trailPanel = null;
+  stopTrailRefresh();
+  ctx.ui.setWidget("amux-trail", undefined);
+}
+
+function toggleTrail(ctx: ExtensionContext, panelName: string): void {
+  if (trailPanel === panelName) {
+    hideTrail(ctx);
+  } else {
+    showTrail(ctx, panelName);
+  }
+}
+
+function renderTrailWidget(ctx: ExtensionContext): void {
+  if (!ctx.hasUI || !trailPanel) return;
+
+  const activeName = trailPanel;
+
+  ctx.ui.setWidget("amux-trail", (_tui, theme) => {
+    const all = discoverAllPanels();
     const cwd = normalizePath(process.cwd());
 
-    function loadContent(): void {
-      const cur = discoverAllPanels();
-      if (cur.length === 0) { done(); return; }
-      if (selectedIdx >= cur.length) selectedIdx = cur.length - 1;
-      const result = amux([cur[selectedIdx].name, "read"]);
-      content = result.stdout.trim() || "(empty)";
+    // Tab bar
+    const tabs = all.map((p, i) => {
+      const n = i + 1;
+      const key = n <= 9 ? theme.fg("muted", `⌥${n}`) : "";
+      const isLocal = p.cwd && normalizePath(p.cwd) === cwd;
+      const suffix = isLocal ? "" : theme.fg("dim", "○");
+      if (p.name === activeName) {
+        return key + theme.fg("accent", theme.bold(":" + p.name)) + suffix;
+      }
+      return key + theme.fg("dim", ":" + p.name) + suffix;
+    });
+    const tabLine = " " + tabs.join("  ");
+
+    // Panel output — last TRAIL_LINES lines
+    let outputLines: string[] = [];
+    const result = amux([activeName, "read"]);
+    const raw = result.stdout.trim();
+    if (raw && raw !== "(empty)") {
+      const lines = raw.split("\n");
+      outputLines = lines.slice(-TRAIL_LINES);
     }
 
-    function startRefresh(): void {
-      if (refreshTimer) clearInterval(refreshTimer);
-      refreshTimer = setInterval(() => { loadContent(); tui.requestRender(); }, 2000);
+    const contentLines = outputLines.map((l) =>
+      " " + theme.fg("toolOutput", l)
+    );
+
+    // Pad to TRAIL_LINES so widget doesn't jump in height
+    while (contentLines.length < TRAIL_LINES) {
+      contentLines.push("");
     }
 
-    loadContent();
-    startRefresh();
+    const divider = theme.fg("dim", "─".repeat(80));
+
+    const widgetLines = [
+      tabLine,
+      divider,
+      ...contentLines,
+      divider,
+    ];
 
     return {
-      render(width: number): string[] {
-        const cur = discoverAllPanels();
-        if (cur.length === 0) return ["(no panels)"];
-
-        const lines: string[] = [];
-
-        // Tab bar
-        const tabs = cur.map((p, i) => {
-          const key = theme.fg("muted", `⌥${i + 1}`);
-          const isLocal = p.cwd && normalizePath(p.cwd) === cwd;
-          const suffix = isLocal ? "" : theme.fg("dim", "○");
-          if (i === selectedIdx) {
-            return key + theme.fg("accent", theme.bold(":" + p.name)) + suffix;
-          }
-          return key + theme.fg("dim", ":" + p.name) + suffix;
-        });
-        lines.push(" " + tabs.join("  "));
-        lines.push(theme.fg("dim", "─".repeat(width)));
-
-        // Panel output
-        const contentLines = content.split("\n");
-        const maxLines = Math.max(1, (tui.screenHeight || 24) - 6);
-        const visible = contentLines.slice(-maxLines);
-        for (const line of visible) {
-          lines.push(" " + truncateToWidth(theme.fg("toolOutput", line), width - 2));
-        }
-
-        // Footer
-        lines.push(theme.fg("dim", "─".repeat(width)));
-        lines.push(" " + theme.fg("dim", "⌥1-9 switch · esc close · ○ = other dir"));
-
-        return lines;
-      },
-
-      invalidate(): void {},
-
-      handleInput(data: string): void {
-        if (matchesKey(data, Key.escape)) {
-          if (refreshTimer) clearInterval(refreshTimer);
-          done();
-          return;
-        }
-        for (let i = 1; i <= 9; i++) {
-          if (matchesKey(data, Key.alt(String(i) as any))) {
-            const cur = discoverAllPanels();
-            if (i - 1 < cur.length) {
-              selectedIdx = i - 1;
-              loadContent();
-              startRefresh();
-              tui.requestRender();
-            }
-            return;
-          }
-        }
-      },
+      render: () => widgetLines,
+      invalidate: () => {},
     };
   });
+}
+
+function startTrailRefresh(ctx: ExtensionContext): void {
+  stopTrailRefresh();
+  trailRefreshTimer = setInterval(() => {
+    if (trailPanel && ctx.hasUI) {
+      renderTrailWidget(ctx);
+    } else {
+      stopTrailRefresh();
+    }
+  }, TRAIL_REFRESH_MS);
+}
+
+function stopTrailRefresh(): void {
+  if (trailRefreshTimer) {
+    clearInterval(trailRefreshTimer);
+    trailRefreshTimer = null;
+  }
 }
 
 // -- rendering helpers --------------------------------------------------------
@@ -313,26 +327,53 @@ export default function (pi: ExtensionAPI) {
       );
     }
 
-    // Auto-show panel viewer if there are existing panels
+    // Auto-show trailing widget if there are existing hot panels
     const existing = discoverAllPanels();
-    if (existing.length > 0) {
-      // Prefer hot panels first, then first panel
-      const hotIdx = existing.findIndex((p) => p.hot);
-      showPanelViewer(ctx, hotIdx >= 0 ? hotIdx : 0);
+    const hot = existing.find((p) => p.hot);
+    if (hot) {
+      showTrail(ctx, hot.name);
+    } else if (existing.length > 0) {
+      showTrail(ctx, existing[0].name);
     }
   });
   pi.on("session_switch", (_event, ctx) => startWatching(ctx));
-  pi.on("session_shutdown", () => stopWatching());
+  pi.on("session_shutdown", () => { stopWatching(); stopTrailRefresh(); });
   pi.on("turn_end", (_event, ctx) => { lastCtx = ctx; updateStatus(); });
 
-  // --- ⌥1..9 panel viewer ---
+  // --- ⌥1..9 toggle trailing ---
 
   for (let i = 1; i <= 9; i++) {
     pi.registerShortcut(Key.alt(String(i) as any), {
-      description: `View amux panel ${i}`,
-      handler: async (ctx) => showPanelViewer(ctx, i - 1),
+      description: `Toggle trailing for amux panel ${i}`,
+      handler: async (ctx) => {
+        const all = discoverAllPanels();
+        if (i - 1 >= all.length) {
+          if (all.length === 0) {
+            ctx.ui.notify("No amux panels", "info");
+          }
+          return;
+        }
+        toggleTrail(ctx, all[i - 1].name);
+      },
     });
   }
+
+  // --- ⌥k kill currently trailed panel ---
+
+  pi.registerShortcut(Key.alt("k"), {
+    description: "Kill the currently trailed amux panel",
+    handler: async (ctx) => {
+      if (!trailPanel) {
+        ctx.ui.notify("No panel being trailed", "info");
+        return;
+      }
+      const name = trailPanel;
+      amux([name, "kill"]);
+      hideTrail(ctx);
+      updateStatus();
+      ctx.ui.notify(`killed ${name}`, "info");
+    },
+  });
 
   // --- tool: amux_shell ---
 
@@ -374,6 +415,12 @@ export default function (pi: ExtensionAPI) {
     async execute(_toolCallId, params) {
       const { name, command, timeout } = params;
       const t = timeout ?? 5;
+
+      // Auto-show trailing for this panel
+      if (lastCtx?.hasUI) {
+        showTrail(lastCtx, name);
+      }
+
       const result = amux([name, "shell", command, `-t${t}`], t + 5);
       return {
         content: [{ type: "text", text: result.stdout || "(no output)" }],
@@ -489,6 +536,9 @@ export default function (pi: ExtensionAPI) {
 
     async execute(_toolCallId, params) {
       const result = amux([params.name, "kill"]);
+      if (trailPanel === params.name && lastCtx) {
+        hideTrail(lastCtx);
+      }
       return {
         content: [{ type: "text", text: result.stdout || `killed ${params.name}` }],
         details: { panel: params.name },
@@ -534,7 +584,7 @@ export default function (pi: ExtensionAPI) {
   // --- command: /amux ---
 
   pi.registerCommand("amux", {
-    description: "Manage amux — /amux (status), /amux install (add to PATH), /amux <cmd> (run in shell panel)",
+    description: "Manage amux — /amux (toggle trail), /amux install (add to PATH), /amux <cmd> (run in shell panel)",
     handler: async (args, ctx) => {
       const sub = args.trim();
 
@@ -559,7 +609,6 @@ export default function (pi: ExtensionAPI) {
         const link = join(target, "amux");
 
         try {
-          // If link already exists, check if it points to the right place
           if (existsSync(link) || lstatSync(link).isSymbolicLink?.()) {
             const existing = readlinkSync(link);
             if (realpathSync(existing) === realpathSync(bin)) {
@@ -568,9 +617,7 @@ export default function (pi: ExtensionAPI) {
             }
             unlinkSync(link);
           }
-        } catch {
-          // lstatSync throws if path doesn't exist at all — that's fine
-        }
+        } catch {}
 
         try {
           mkdirSync(target, { recursive: true });
@@ -582,21 +629,24 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      // /amux <shell command> — fire into "shell" panel, show viewer
+      // /amux <shell command> — fire into "shell" panel, show trail
       if (sub) {
         amuxFireAndForget("shell", sub);
-        const all = discoverAllPanels();
-        const idx = all.findIndex((p) => p.name === "shell");
-        showPanelViewer(ctx, idx >= 0 ? idx : 0);
+        showTrail(ctx, "shell");
         return;
       }
 
-      // /amux — show status
-      const p = discoverAllPanels();
-      if (p.length > 0) {
-        ctx.ui.notify(`Active panels: ${p.map((x) => x.name).join(", ")}`, "info");
+      // /amux — toggle trail for first panel
+      const all = discoverAllPanels();
+      if (all.length === 0) {
+        ctx.ui.notify("No amux panels", "info");
+        return;
+      }
+      if (trailPanel) {
+        hideTrail(ctx);
       } else {
-        ctx.ui.notify("No active amux panels", "info");
+        const hot = all.find((p) => p.hot);
+        showTrail(ctx, hot ? hot.name : all[0].name);
       }
     },
   });
