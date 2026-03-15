@@ -11,7 +11,7 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
 import { keyHint } from "@mariozechner/pi-coding-agent";
 import { Text, Container, matchesKey, Key, truncateToWidth } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
-import { readdirSync, statSync, watch as fsWatch, mkdirSync } from "node:fs";
+import { readdirSync, readFileSync, statSync, watch as fsWatch, mkdirSync, symlinkSync, unlinkSync, existsSync, lstatSync, readlinkSync, realpathSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -28,8 +28,14 @@ function amuxBin(): string {
   return join(__dirname, "..", "bin", "amux");
 }
 
+/** Check if `amux` is available on PATH (i.e. installed globally). */
+function amuxOnPath(): boolean {
+  const result = spawnSync("which", ["amux"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+  return result.status === 0;
+}
+
 function amux(args: string[], timeout = 10): { stdout: string; exitCode: number } {
-  const result = spawnSync("bun", [amuxBin(), ...args], {
+  const result = spawnSync(amuxBin(), args, {
     encoding: "utf-8",
     timeout: timeout * 1000,
     stdio: ["pipe", "pipe", "pipe"],
@@ -45,9 +51,10 @@ function amux(args: string[], timeout = 10): { stdout: string; exitCode: number 
 interface PanelState {
   name: string;
   hot: boolean;
+  cwd: string | undefined;
 }
 
-function discoverPanels(): PanelState[] {
+function discoverAllPanels(): PanelState[] {
   try {
     const files = readdirSync(PANEL_DIR);
     const now = Date.now();
@@ -55,17 +62,45 @@ function discoverPanels(): PanelState[] {
     for (const f of files) {
       if (!f.endsWith(".log")) continue;
       const name = basename(f, ".log");
+      let hot = false;
       try {
         const st = statSync(join(PANEL_DIR, f));
-        panels.push({ name, hot: (now - st.mtimeMs) < HOT_MS });
-      } catch {
-        panels.push({ name, hot: false });
-      }
+        hot = (now - st.mtimeMs) < HOT_MS;
+      } catch {}
+      let cwd: string | undefined;
+      try {
+        cwd = readFileSync(join(PANEL_DIR, `${name}.cwd`), "utf-8").trim() || undefined;
+      } catch {}
+      panels.push({ name, hot, cwd });
     }
     return panels.sort((a, b) => a.name.localeCompare(b.name));
   } catch {
     return [];
   }
+}
+
+function normalizePath(p: string): string {
+  try { return realpathSync(p); } catch { return p; }
+}
+
+interface ScopedPanels {
+  local: PanelState[];   // panels created in cwd
+  others: PanelState[];  // panels from other directories
+}
+
+function scopePanels(cwd: string): ScopedPanels {
+  const all = discoverAllPanels();
+  const norm = normalizePath(cwd);
+  const local: PanelState[] = [];
+  const others: PanelState[] = [];
+  for (const p of all) {
+    if (p.cwd && normalizePath(p.cwd) === norm) {
+      local.push(p);
+    } else {
+      others.push(p);
+    }
+  }
+  return { local, others };
 }
 
 // -- status bar ---------------------------------------------------------------
@@ -79,15 +114,15 @@ function updateStatus(): void {
   if (!ctx?.hasUI) return;
 
   const theme = ctx.ui.theme;
-  const panels = discoverPanels();
+  const { local, others } = scopePanels(process.cwd());
 
-  if (panels.length === 0) {
+  if (local.length === 0 && others.length === 0) {
     ctx.ui.setStatus("amux", undefined);
     return;
   }
 
   const parts: string[] = [];
-  panels.forEach((p, i) => {
+  local.forEach((p, i) => {
     const n = i + 1;
     const tag = n <= 9 ? `⌥${n}:` : "";
     if (p.hot) {
@@ -97,7 +132,20 @@ function updateStatus(): void {
     }
   });
 
-  ctx.ui.setStatus("amux", theme.fg("muted", "amux ") + parts.join(theme.fg("muted", " ")));
+  if (others.length > 0) {
+    const anyHot = others.some((p) => p.hot);
+    const label = `+${others.length} other${others.length === 1 ? "" : "s"}`;
+    if (anyHot) {
+      parts.push(theme.bold(theme.fg("success", label)));
+    } else {
+      parts.push(theme.fg("dim", label));
+    }
+  }
+
+  const status = local.length > 0
+    ? theme.fg("muted", "amux ") + parts.join(theme.fg("muted", " "))
+    : parts.join(theme.fg("muted", " "));
+  ctx.ui.setStatus("amux", status);
 }
 
 function scheduleUpdate(): void {
@@ -128,18 +176,19 @@ function stopWatching(): void {
 
 function showPanelViewer(ctx: ExtensionContext, panelIndex: number): void {
   if (!ctx.hasUI) return;
-  const panels = discoverPanels();
-  if (panels.length === 0) { ctx.ui.notify("No amux panels", "info"); return; }
+  const all = discoverAllPanels();
+  if (all.length === 0) { ctx.ui.notify("No amux panels", "info"); return; }
 
-  const startIdx = Math.min(panelIndex, panels.length - 1);
+  const startIdx = Math.min(panelIndex, all.length - 1);
 
   ctx.ui.custom<void>((tui, theme, _kb, done) => {
     let selectedIdx = startIdx;
     let content = "";
     let refreshTimer: ReturnType<typeof setInterval> | null = null;
+    const cwd = normalizePath(process.cwd());
 
     function loadContent(): void {
-      const cur = discoverPanels();
+      const cur = discoverAllPanels();
       if (cur.length === 0) { done(); return; }
       if (selectedIdx >= cur.length) selectedIdx = cur.length - 1;
       const result = amux([cur[selectedIdx].name, "read"]);
@@ -156,18 +205,20 @@ function showPanelViewer(ctx: ExtensionContext, panelIndex: number): void {
 
     return {
       render(width: number): string[] {
-        const cur = discoverPanels();
+        const cur = discoverAllPanels();
         if (cur.length === 0) return ["(no panels)"];
 
         const lines: string[] = [];
 
-        // Tab bar: ⌥1:server  ⌥2:build  ⌥3:test
+        // Tab bar
         const tabs = cur.map((p, i) => {
           const key = theme.fg("muted", `⌥${i + 1}`);
+          const isLocal = p.cwd && normalizePath(p.cwd) === cwd;
+          const suffix = isLocal ? "" : theme.fg("dim", "○");
           if (i === selectedIdx) {
-            return key + theme.fg("accent", theme.bold(":" + p.name));
+            return key + theme.fg("accent", theme.bold(":" + p.name)) + suffix;
           }
-          return key + theme.fg("dim", ":" + p.name);
+          return key + theme.fg("dim", ":" + p.name) + suffix;
         });
         lines.push(" " + tabs.join("  "));
         lines.push(theme.fg("dim", "─".repeat(width)));
@@ -182,7 +233,7 @@ function showPanelViewer(ctx: ExtensionContext, panelIndex: number): void {
 
         // Footer
         lines.push(theme.fg("dim", "─".repeat(width)));
-        lines.push(" " + theme.fg("dim", "⌥1-9 switch · esc close · refreshes every 2s"));
+        lines.push(" " + theme.fg("dim", "⌥1-9 switch · esc close · ○ = other dir"));
 
         return lines;
       },
@@ -197,7 +248,7 @@ function showPanelViewer(ctx: ExtensionContext, panelIndex: number): void {
         }
         for (let i = 1; i <= 9; i++) {
           if (matchesKey(data, Key.alt(String(i) as any))) {
-            const cur = discoverPanels();
+            const cur = discoverAllPanels();
             if (i - 1 < cur.length) {
               selectedIdx = i - 1;
               loadContent();
@@ -243,7 +294,15 @@ export default function (pi: ExtensionAPI) {
 
   // --- lifecycle ---
 
-  pi.on("session_start", (_event, ctx) => startWatching(ctx));
+  pi.on("session_start", (_event, ctx) => {
+    startWatching(ctx);
+    if (!amuxOnPath()) {
+      ctx.ui.notify(
+        "amux is not on your PATH. Run /amux install or: npm i -g amux",
+        "warning",
+      );
+    }
+  });
   pi.on("session_switch", (_event, ctx) => startWatching(ctx));
   pi.on("session_shutdown", () => stopWatching());
   pi.on("turn_end", (_event, ctx) => { lastCtx = ctx; updateStatus(); });
@@ -457,11 +516,65 @@ export default function (pi: ExtensionAPI) {
   // --- command: /amux ---
 
   pi.registerCommand("amux", {
-    description: "Show amux panel status",
-    handler: async (_args, ctx) => {
-      const panels = discoverPanels();
-      if (panels.length > 0) {
-        ctx.ui.notify(`Active panels: ${panels.map((p) => p.name).join(", ")}`, "info");
+    description: "Manage amux — /amux (status), /amux install (add to PATH), /amux <cmd> (run in shell panel)",
+    handler: async (args, ctx) => {
+      const sub = args.trim();
+
+      // /amux install — symlink into a PATH directory
+      if (sub === "install") {
+        const bin = amuxBin();
+        const candidates = [
+          join(homedir(), ".local", "bin"),
+          join(homedir(), ".local", "share", "bin"),
+        ];
+        const pathDirs = (process.env.PATH || "").split(":");
+        const target = candidates.find((d) => pathDirs.includes(d));
+
+        if (!target) {
+          ctx.ui.notify(
+            `Neither ~/.local/bin nor ~/.local/share/bin is on your PATH.\nAdd one to your shell profile first, then retry.`,
+            "error",
+          );
+          return;
+        }
+
+        const link = join(target, "amux");
+
+        try {
+          // If link already exists, check if it points to the right place
+          if (existsSync(link) || lstatSync(link).isSymbolicLink?.()) {
+            const existing = readlinkSync(link);
+            if (realpathSync(existing) === realpathSync(bin)) {
+              ctx.ui.notify(`amux already installed → ${link}`, "info");
+              return;
+            }
+            unlinkSync(link);
+          }
+        } catch {
+          // lstatSync throws if path doesn't exist at all — that's fine
+        }
+
+        try {
+          mkdirSync(target, { recursive: true });
+          symlinkSync(bin, link);
+          ctx.ui.notify(`✓ amux symlinked → ${link}`, "success");
+        } catch (e: any) {
+          ctx.ui.notify(`Failed to symlink: ${e.message}`, "error");
+        }
+        return;
+      }
+
+      // /amux <shell command> — run in a "shell" panel
+      if (sub) {
+        const result = amux(["shell", "shell", sub, "-t5"], 15);
+        ctx.ui.notify(result.stdout.trim() || "(no output)", result.exitCode === 0 ? "info" : "error");
+        return;
+      }
+
+      // /amux — show status
+      const p = discoverPanels();
+      if (p.length > 0) {
+        ctx.ui.notify(`Active panels: ${p.map((x) => x.name).join(", ")}`, "info");
       } else {
         ctx.ui.notify("No active amux panels", "info");
       }

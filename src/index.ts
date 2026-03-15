@@ -34,6 +34,7 @@ export {
 
   // Panel logs
   panelLogPath,
+  panelCwd,
 
   // Low-level
   tmux,

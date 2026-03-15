@@ -6,7 +6,7 @@
 
 import pkg from "@xterm/headless";
 const { Terminal } = pkg;
-import { existsSync, mkdirSync, statSync, rmSync, openSync, readSync, closeSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, statSync, rmSync, openSync, readSync, readFileSync, closeSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join, resolve, dirname } from "path";
 import { spawnSync, execFileSync } from "child_process";
@@ -304,12 +304,26 @@ export function panelLogPath(name: string): string {
   return join(config.panelDir, `${name}.log`);
 }
 
+/** Path to the cwd sidecar for a panel. */
+function panelCwdPath(name: string): string {
+  return join(config.panelDir, `${name}.cwd`);
+}
+
+/** Read the cwd a panel was created in (or undefined). */
+export function panelCwd(name: string): string | undefined {
+  try {
+    return readFileSync(panelCwdPath(name), "utf-8").trim() || undefined;
+  } catch { return undefined; }
+}
+
 /** Start persistent pipe-pane logging for a panel. */
 function startPanelLog(target: string, name: string): void {
   mkdirSync(config.panelDir, { recursive: true });
   const logPath = panelLogPath(name);
   // Truncate on panel creation — fresh log per panel lifecycle
   writeFileSync(logPath, "");
+  // Record cwd at creation time
+  writeFileSync(panelCwdPath(name), process.cwd());
   tmux([
     "pipe-pane", "-o", "-t", target,
     `cat >> ${shellEscape(logPath)}`,
@@ -572,8 +586,9 @@ export function kill(name: string): void {
   const target = findPanel(name);
   if (!target) return;
   tmux(["kill-window", "-t", target], { allowFail: true });
-  // Clean up panel log
+  // Clean up panel log + cwd sidecar
   try { rmSync(panelLogPath(name), { force: true }); } catch {}
+  try { rmSync(panelCwdPath(name), { force: true }); } catch {}
 }
 
 export function terminate(): void {
