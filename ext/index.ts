@@ -35,7 +35,7 @@ const BOLD = "\x1b[1m";
 const DIM = "\x1b[2m";
 
 function blueFg(s: string): string { return `${BLUE_FG}${s}${RESET}`; }
-function blueBgWhite(s: string): string { return `\x1b[97;1;44m${s}${RESET}`; }
+function blueBgBlack(s: string): string { return `\x1b[30;1;44m${s}${RESET}`; }
 function blueDim(s: string): string { return `${BLUE_FG}${DIM}${s}${RESET}`; }
 function teal(s: string): string { return `${TEAL_FG}${s}${RESET}`; }
 function tealDim(s: string): string { return `${TEAL_FG}${DIM}${s}${RESET}`; }
@@ -269,15 +269,16 @@ function installTabBarWidget(ctx: ExtensionContext): void {
         const n = i + 1;
         const hotDot = p.hot ? blueFg("●") : "";
         if (p.name === activeName) {
-          // Trailed: blue bg pill
+          // Trailed: blue bg, black text
           const label = n <= 9 ? ` ⌥${n} ${p.name} ` : ` ${p.name} `;
-          return blueBgWhite(label) + hotDot;
+          return blueBgBlack(label) + hotDot;
         }
-        const label = n <= 9 ? `⌥${n} ${p.name}` : p.name;
+        const key = n <= 9 ? blueDim(`⌥${n} `) : "";
+        const label = p.name;
         if (p.hot) {
-          return blueFg(label) + " " + hotDot;
+          return key + blueFg(label) + " " + hotDot;
         }
-        return blueDim(label);
+        return key + blueDim(label);
       });
       const sep = blueDim(" · ");
       const tabLine = truncateToWidth(" " + tealDim("amux") + "  " + tabs.join(sep), width);
