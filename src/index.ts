@@ -51,4 +51,5 @@ export {
   SPECIAL_KEYS,
   VALID_PANEL_NAME,
   INTERACTIVE_PROMPT_RE,
+  DONE_SENTINEL_RE,
 } from "./amux.ts";

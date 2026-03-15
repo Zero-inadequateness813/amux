@@ -75,6 +75,92 @@ async function amuxFireAndForget(name: string, command: string): Promise<void> {
   await amuxAsync([name, "shell", command, "-t0"], 5);
 }
 
+// Sentinel emitted by bashrc PROMPT_COMMAND: \x06AMUX_DONE:<exit>:<name>\x06
+const DONE_SENTINEL_RE = /\x06AMUX_DONE:(\d+):([^\x06]+)\x06/;
+
+/**
+ * Wait for a command to complete by watching the panel log for the sentinel.
+ * Returns the exit code, or null if timed out (long-running process).
+ *
+ * Non-blocking — uses async polling with fs.watch for efficiency.
+ */
+async function waitForDone(
+  panelName: string,
+  signal?: AbortSignal,
+  timeoutMs = 120_000,
+): Promise<{ exitCode: number } | null> {
+  const logPath = join(PANEL_DIR, `${panelName}.log`);
+
+  // Record position to only scan new bytes
+  let pos = 0;
+  try { pos = statSync(logPath).size; } catch { return null; }
+
+  const deadline = Date.now() + timeoutMs;
+
+  return new Promise((resolve) => {
+    let watcher: FSWatcher | null = null;
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+    let resolved = false;
+
+    function cleanup(): void {
+      if (watcher) { watcher.close(); watcher = null; }
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    }
+
+    function done(result: { exitCode: number } | null): void {
+      if (resolved) return;
+      resolved = true;
+      cleanup();
+      resolve(result);
+    }
+
+    function check(): void {
+      if (resolved) return;
+      if (signal?.aborted) { done(null); return; }
+      if (Date.now() > deadline) { done(null); return; }
+
+      let size: number;
+      try { size = statSync(logPath).size; } catch { return; }
+      if (size <= pos) return;
+
+      // Read new bytes
+      let fd: number;
+      try { fd = openSync(logPath, "r"); } catch { return; }
+      try {
+        const buf = Buffer.alloc(size - pos);
+        const bytesRead = readSync(fd, buf, 0, buf.length, pos);
+        pos = size;
+        if (bytesRead > 0) {
+          const chunk = buf.subarray(0, bytesRead).toString("utf-8");
+          const m = DONE_SENTINEL_RE.exec(chunk);
+          if (m && m[2] === panelName) {
+            done({ exitCode: parseInt(m[1], 10) });
+          }
+        }
+      } finally {
+        closeSync(fd);
+      }
+    }
+
+    // Watch for file changes
+    try {
+      watcher = fsWatch(PANEL_DIR, (_ev, f) => {
+        if (f === `${panelName}.log`) check();
+      });
+      watcher.on("error", () => {});
+    } catch {}
+
+    // Fallback poll every 500ms in case fs.watch misses events
+    pollTimer = setInterval(check, 500);
+
+    // Abort signal
+    signal?.addEventListener("abort", () => done(null), { once: true });
+
+    // Initial check — command may have already finished
+    check();
+  });
+}
+
 // -- panel discovery from filesystem ------------------------------------------
 
 interface PanelState {
@@ -549,10 +635,10 @@ export default function (pi: ExtensionAPI) {
       return rendered ? new Text(rendered, 0, 0) : undefined;
     },
 
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       const { name, command } = params;
 
-      // Fire command without blocking — trailing widget shows live output
+      // Fire command into panel (returns immediately)
       await amuxFireAndForget(name, command);
 
       // Auto-trail this panel
@@ -560,13 +646,22 @@ export default function (pi: ExtensionAPI) {
         showTrail(lastCtx, name);
       }
 
-      // Brief pause then snapshot for LLM context
-      await new Promise((r) => setTimeout(r, 500));
-      const snap = await amuxAsync([name, "read"]);
+      // Wait for command to complete (sentinel in log) or timeout
+      const result = await waitForDone(name, signal, 120_000);
+
+      // Read panel output for LLM
+      const snap = await amuxAsync([name, "read", "--full"]);
+      const exitCode = result?.exitCode ?? null;
+      const done = exitCode !== null;
+
+      let text = snap.stdout?.trim() || "";
+      if (!done) {
+        text += `\n\n(command still running in panel "${name}" — use amux_read to check later)`;
+      }
 
       return {
-        content: [{ type: "text", text: snap.stdout || `started in panel ${name}` }],
-        details: { panel: name, command },
+        content: [{ type: "text", text: text || `started in panel ${name}` }],
+        details: { panel: name, command, exitCode, done },
       };
     },
   });
@@ -648,13 +743,20 @@ export default function (pi: ExtensionAPI) {
       return rendered ? new Text(rendered, 0, 0) : undefined;
     },
 
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       const { name, keys } = params;
-      // Send keys without blocking
+      // Send keys (returns immediately)
       await amuxAsync([name, "send-keys", ...keys, "-t0"], 5);
 
-      // Brief pause then snapshot
-      await new Promise((r) => setTimeout(r, 500));
+      // If the keys include Enter, a command may be running — wait for completion
+      const hasEnter = keys.some((k) => k === "Enter" || k === "enter");
+      if (hasEnter) {
+        await waitForDone(name, signal, 30_000);
+      } else {
+        // Brief pause for non-command keys (C-c, text, etc.)
+        await new Promise((r) => setTimeout(r, 500));
+      }
+
       const snap = await amuxAsync([name, "read"]);
       return {
         content: [{ type: "text", text: snap.stdout || "(no output)" }],

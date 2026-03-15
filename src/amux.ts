@@ -58,6 +58,10 @@ export const SPECIAL_KEYS: Record<string, string> = {
 
 export const VALID_PANEL_NAME = /^[a-zA-Z0-9_-]+$/;
 
+// Sentinel emitted by bashrc PROMPT_COMMAND when a command completes.
+// Format: \x06AMUX_DONE:<exit_code>:<panel_name>\x06
+export const DONE_SENTINEL_RE = /\x06AMUX_DONE:(\d+):([^\x06]+)\x06/;
+
 // Interactive prompt patterns — matched against clean screen text from xterm
 export const INTERACTIVE_PROMPT_RE = new RegExp(
   [

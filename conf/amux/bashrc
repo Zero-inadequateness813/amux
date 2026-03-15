@@ -3,6 +3,10 @@ bind 'set enable-bracketed-paste on' 2>/dev/null
 __amux_prompt() {
   local ec=$?
   local name="${AMUX_PANEL:-amux}"
+  # Emit machine-readable sentinel before the prompt.
+  # Format: ␆AMUX_DONE:<exit_code>:<panel_name>␆
+  # ␆ = \x06 (ACK) — invisible control char, won't appear in normal output.
+  printf '\x06AMUX_DONE:%d:%s\x06' "$ec" "$name"
   if [ $ec -eq 0 ]; then
     PS1="$name \\w \\$ "
   else

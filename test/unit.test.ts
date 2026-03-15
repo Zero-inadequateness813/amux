@@ -3,6 +3,7 @@ import { strict as assert } from "node:assert";
 import {
   stripAnsi, normalizeKey, validatePanelName, socketPath, config,
   detectInputWait, InvalidPanelName, INTERACTIVE_PROMPT_RE,
+  DONE_SENTINEL_RE,
 } from "../src/amux.ts";
 
 describe("stripAnsi", () => {
@@ -167,5 +168,32 @@ describe("detectInputWait", () => {
 
   test("does not false-match different panel name", () => {
     assert.equal(detectInputWait("other ~/path $ ", "server"), false);
+  });
+});
+
+describe("DONE_SENTINEL_RE", () => {
+  test("matches exit 0", () => {
+    const m = DONE_SENTINEL_RE.exec("\x06AMUX_DONE:0:server\x06");
+    assert.ok(m);
+    assert.equal(m[1], "0");
+    assert.equal(m[2], "server");
+  });
+
+  test("matches non-zero exit", () => {
+    const m = DONE_SENTINEL_RE.exec("\x06AMUX_DONE:127:build\x06");
+    assert.ok(m);
+    assert.equal(m[1], "127");
+    assert.equal(m[2], "build");
+  });
+
+  test("matches sentinel embedded in other output", () => {
+    const m = DONE_SENTINEL_RE.exec("some output\n\x06AMUX_DONE:1:test\x06\nserver ~/path $ ");
+    assert.ok(m);
+    assert.equal(m[1], "1");
+    assert.equal(m[2], "test");
+  });
+
+  test("does not match without delimiters", () => {
+    assert.equal(DONE_SENTINEL_RE.exec("AMUX_DONE:0:server"), null);
   });
 });
