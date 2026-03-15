@@ -15,7 +15,7 @@ import { Type } from "@sinclair/typebox";
 import { readdirSync, readFileSync, statSync, watch as fsWatch, mkdirSync, symlinkSync, unlinkSync, existsSync, lstatSync, readlinkSync, realpathSync, openSync, readSync, closeSync, fstatSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { homedir } from "node:os";
-import { spawnSync } from "node:child_process";
+// child_process no longer needed — all tool calls use pi.exec via amuxAsync
 import { fileURLToPath } from "node:url";
 import type { FSWatcher } from "node:fs";
 
@@ -55,29 +55,24 @@ function amuxBin(): string {
 
 /** Check if `amux` is available on PATH (i.e. installed globally). */
 function amuxOnPath(): boolean {
-  const result = spawnSync("which", ["amux"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
-  return result.status === 0;
+  try {
+    return existsSync(join(homedir(), ".local", "bin", "amux"))
+      || existsSync(join(homedir(), ".local", "share", "bin", "amux"));
+  } catch { return false; }
 }
 
-function amux(args: string[], timeout = 10): { stdout: string; exitCode: number } {
-  const result = spawnSync(amuxBin(), args, {
-    encoding: "utf-8",
-    timeout: timeout * 1000,
-    stdio: ["pipe", "pipe", "pipe"],
-  });
+/** Async amux CLI call via pi.exec — never blocks the event loop. */
+async function amuxAsync(args: string[], timeout = 10): Promise<{ stdout: string; exitCode: number }> {
+  const result = await piRef.exec(amuxBin(), args, { timeout: timeout * 1000 });
   return {
     stdout: (result.stdout ?? "") + (result.stderr ?? ""),
-    exitCode: result.status ?? 1,
+    exitCode: result.code ?? 1,
   };
 }
 
-/** Fire a command into a panel without waiting for output. */
-function amuxFireAndForget(name: string, command: string): void {
-  spawnSync(amuxBin(), [name, "shell", command, "-t0"], {
-    encoding: "utf-8",
-    timeout: 5000,
-    stdio: ["pipe", "pipe", "pipe"],
-  });
+/** Fire a command into a panel without waiting — async. */
+async function amuxFireAndForget(name: string, command: string): Promise<void> {
+  await amuxAsync([name, "shell", command, "-t0"], 5);
 }
 
 // -- panel discovery from filesystem ------------------------------------------
@@ -85,8 +80,17 @@ function amuxFireAndForget(name: string, command: string): void {
 interface PanelState {
   name: string;
   hot: boolean;
+  lastActivityMs: number;
   cwd: string | undefined;
 }
+
+const STALE_MS = 3 * 60 * 1000; // 3 minutes — dim tabs with no recent output
+const BLINK_MS = 2000;          // blink for 2s after new output on non-trailed panel
+
+// Track last-seen log size per panel to detect new output
+const panelLogSizes: Record<string, number> = {};
+// Timestamp of last new-output event per panel (for blink effect)
+const panelBlinkUntil: Record<string, number> = {};
 
 function discoverAllPanels(): PanelState[] {
   try {
@@ -97,15 +101,24 @@ function discoverAllPanels(): PanelState[] {
       if (!f.endsWith(".log")) continue;
       const name = basename(f, ".log");
       let hot = false;
+      let lastActivityMs = 0;
       try {
         const st = statSync(join(PANEL_DIR, f));
         hot = (now - st.mtimeMs) < HOT_MS;
+        lastActivityMs = st.mtimeMs;
+
+        // Detect new output → trigger blink on non-trailed panels
+        const prevSize = panelLogSizes[name] ?? st.size;
+        if (st.size > prevSize && name !== trailPanel) {
+          panelBlinkUntil[name] = now + BLINK_MS;
+        }
+        panelLogSizes[name] = st.size;
       } catch {}
       let cwd: string | undefined;
       try {
         cwd = readFileSync(join(PANEL_DIR, `${name}.cwd`), "utf-8").trim() || undefined;
       } catch {}
-      panels.push({ name, hot, cwd });
+      panels.push({ name, hot, lastActivityMs, cwd });
     }
     return panels.sort((a, b) => a.name.localeCompare(b.name));
   } catch {
@@ -266,21 +279,35 @@ function installTabBarWidget(ctx: ExtensionContext): void {
       const all = trailCachedPanels;
       const cwd = normalizePath(process.cwd());
 
-      // Tab bar — "Amux" label, tabs separated by ·, trailed tab highlighted
+      // Tab bar — "Amux" label, tabs separated by ·
+      // States: trailed (blue bg) | blinking (reverse) | hot | stale (very dim) | normal (dim)
+      const now = Date.now();
       const tabs = all.map((p, i) => {
         const n = i + 1;
-        const hotDot = p.hot ? blueFg("●") : "";
+        const isStale = p.lastActivityMs > 0 && (now - p.lastActivityMs) > STALE_MS;
+        const isBlinking = (panelBlinkUntil[p.name] ?? 0) > now;
+        // Blink uses a 500ms toggle — on/off/on/off over the 2s window
+        const blinkOn = isBlinking && (Math.floor((now - (now % 500)) / 500) % 2 === 0);
+
         if (p.name === activeName) {
           // Trailed: blue bg, black text
           const label = n <= 9 ? ` ⌥${n} ${p.name} ` : ` ${p.name} `;
-          return blueBgBlack(label) + hotDot;
+          return blueBgBlack(label);
         }
-        const key = n <= 9 ? gray(`⌥${n} `) : "";
-        const label = p.name;
+
+        const key = n <= 9 ? grayDim(`⌥${n} `) : "";
+
+        if (blinkOn) {
+          // Blink: reverse video blue — eye-catching
+          return key + `\x1b[7;34m ${p.name} ${RESET}`;
+        }
         if (p.hot) {
-          return key + blueFg(label) + " " + hotDot;
+          return key + blueFg(p.name);
         }
-        return key + blueDim(label);
+        if (isStale) {
+          return key + grayDim(p.name);
+        }
+        return key + blueDim(p.name);
       });
       const sep = blueDim(" · ");
       const left = " " + tealDim("amux") + "  " + tabs.join(sep);
@@ -317,7 +344,10 @@ function installTabBarWidget(ctx: ExtensionContext): void {
 
     return {
       render(width: number): string[] {
-        if (snapPanels !== trailCachedPanels || snapOutput !== trailCachedOutput || snapActive !== trailPanel) {
+        // Check if data changed or any panel is blinking (need fresh render)
+        const now = Date.now();
+        const anyBlinking = Object.values(panelBlinkUntil).some((t) => t > now);
+        if (snapPanels !== trailCachedPanels || snapOutput !== trailCachedOutput || snapActive !== trailPanel || anyBlinking) {
           cachedLines = undefined;
           snapPanels = trailCachedPanels;
           snapOutput = trailCachedOutput;
@@ -383,7 +413,10 @@ function getTextContent(result: any): string {
 
 // -- extension ----------------------------------------------------------------
 
+let piRef: ExtensionAPI;
+
 export default function (pi: ExtensionAPI) {
+  piRef = pi;
 
   // --- lifecycle ---
 
@@ -441,7 +474,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       const name = trailPanel;
-      amux([name, "kill"]);
+      amuxAsync([name, "kill"]).catch(() => {});
       hideTrail(ctx);
       ctx.ui.notify(`killed ${name}`, "info");
     },
@@ -487,15 +520,22 @@ export default function (pi: ExtensionAPI) {
       const { name, command, timeout } = params;
       const t = timeout ?? 5;
 
-      // Auto-show trailing for this panel
+      // Auto-trail this panel so output is visible while running
       if (lastCtx?.hasUI) {
         showTrail(lastCtx, name);
       }
 
-      const result = amux([name, "shell", command, `-t${t}`], t + 5);
+      const result = await amuxAsync([name, "shell", command, `-t${t}`], t + 5);
+      const timedOut = result.stdout.includes("still running");
+
+      // If timed out, keep trail open — panel is still producing output
+      if (timedOut && lastCtx?.hasUI) {
+        showTrail(lastCtx, name);
+      }
+
       return {
         content: [{ type: "text", text: result.stdout || "(no output)" }],
-        details: { panel: name, command, exitCode: result.exitCode },
+        details: { panel: name, command, exitCode: result.exitCode, timedOut },
       };
     },
   });
@@ -532,7 +572,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_toolCallId, params) {
       const args = [params.name, "read"];
       if (params.full) args.push("--full");
-      const result = amux(args);
+      const result = await amuxAsync(args);
       return {
         content: [{ type: "text", text: result.stdout || "(empty)" }],
         details: { panel: params.name, full: !!params.full },
@@ -580,7 +620,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_toolCallId, params) {
       const { name, keys, timeout } = params;
       const t = timeout ?? 5;
-      const result = amux([name, "send-keys", ...keys, `-t${t}`], t + 5);
+      const result = await amuxAsync([name, "send-keys", ...keys, `-t${t}`], t + 5);
       return {
         content: [{ type: "text", text: result.stdout || "(no output)" }],
         details: { panel: name, keys },
@@ -614,10 +654,13 @@ export default function (pi: ExtensionAPI) {
     },
 
     async execute(_toolCallId, params) {
-      const result = amux([params.name, "kill"]);
+      const result = await amuxAsync([params.name, "kill"]);
       if (trailPanel === params.name && lastCtx) {
         hideTrail(lastCtx);
       }
+      // Clean up blink/size tracking
+      delete panelBlinkUntil[params.name];
+      delete panelLogSizes[params.name];
       return {
         content: [{ type: "text", text: result.stdout || `killed ${params.name}` }],
         details: { panel: params.name },
@@ -655,7 +698,7 @@ export default function (pi: ExtensionAPI) {
     },
 
     async execute() {
-      const result = amux(["list"]);
+      const result = await amuxAsync(["list"]);
       return {
         content: [{ type: "text", text: result.stdout || "no panels" }],
         details: {},
@@ -720,7 +763,7 @@ export default function (pi: ExtensionAPI) {
           return;
         }
         // Not an existing panel — treat as shell command in "shell" panel
-        amuxFireAndForget("shell", sub);
+        await amuxFireAndForget("shell", sub);
         showTrail(ctx, "shell");
         return;
       }
