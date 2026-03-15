@@ -302,6 +302,14 @@ export default function (pi: ExtensionAPI) {
         "warning",
       );
     }
+
+    // Auto-show panel viewer if there are existing panels
+    const existing = discoverAllPanels();
+    if (existing.length > 0) {
+      // Prefer hot panels first, then first panel
+      const hotIdx = existing.findIndex((p) => p.hot);
+      showPanelViewer(ctx, hotIdx >= 0 ? hotIdx : 0);
+    }
   });
   pi.on("session_switch", (_event, ctx) => startWatching(ctx));
   pi.on("session_shutdown", () => stopWatching());
@@ -572,7 +580,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       // /amux — show status
-      const p = discoverPanels();
+      const p = discoverAllPanels();
       if (p.length > 0) {
         ctx.ui.notify(`Active panels: ${p.map((x) => x.name).join(", ")}`, "info");
       } else {
