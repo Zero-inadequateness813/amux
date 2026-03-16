@@ -4,8 +4,6 @@
 // Each panel name maps to a deterministic tmux window name.
 // A dedicated tmux config locks down titles and provides tab switching hotkeys.
 
-import pkg from "@xterm/headless";
-const { Terminal } = pkg;
 import { existsSync, mkdirSync, statSync, rmSync, openSync, readSync, readFileSync, closeSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join, resolve, dirname } from "path";
@@ -59,10 +57,10 @@ export const SPECIAL_KEYS: Record<string, string> = {
 export const VALID_PANEL_NAME = /^[a-zA-Z0-9_-]+$/;
 
 // Sentinel emitted by bashrc PROMPT_COMMAND when a command completes.
-// Format: \x06AMUX_DONE:<exit_code>:<panel_name>\x06
-export const DONE_SENTINEL_RE = /\x06AMUX_DONE:(\d+):([^\x06]+)\x06/;
+// Format: AMUX_DONE:<exit_code>:<panel_name>  (on its own line)
+export const DONE_SENTINEL_RE = /^AMUX_DONE:(\d+):(.+)$/;
 
-// Interactive prompt patterns — matched against clean screen text from xterm
+// Interactive prompt patterns — matched against clean line text
 export const INTERACTIVE_PROMPT_RE = new RegExp(
   [
     "(?:password|passphrase|passcode)\\s*:\\s*$",
@@ -113,67 +111,25 @@ function sleepSync(ms: number): void {
   Atomics.wait(sleepArray, 0, 0, ms);
 }
 
-// -- terminal screen reader ---------------------------------------------------
-//
-// Uses @xterm/headless to maintain a virtual terminal. Raw bytes from tmux
-// pipe-pane are fed into xterm, which handles all escape sequences, cursor
-// movement, line clearing, etc. We then read the screen buffer to get clean
-// text — no regex parsing of raw ANSI needed.
+// -- line detection -----------------------------------------------------------
 
-function createScreen(cols = 120, rows = 50): {
-  write: (data: Buffer | string) => void;
-  cursorLine: () => string;
-  screenLines: () => string[];
-  dispose: () => void;
-} {
-  const term = new Terminal({ cols, rows, allowProposedApi: true });
-  // Suppress deprecation warning from writeSync
-  const origWarn = console.warn;
-  console.warn = () => {};
-  // @ts-ignore — _core.writeSync is the only synchronous write path
-  const writeSync: (data: string) => void = term._core.writeSync.bind(term._core);
-  console.warn = origWarn;
-
-  return {
-    write(data: Buffer | string) {
-      const origWarn = console.warn;
-      console.warn = () => {};
-      writeSync(typeof data === "string" ? data : data.toString("binary"));
-      console.warn = origWarn;
-    },
-    cursorLine(): string {
-      const buf = term.buffer.active;
-      return buf.getLine(buf.cursorY)?.translateToString(true) ?? "";
-    },
-    /** Read all lines from the screen buffer up to and including the cursor row. */
-    screenLines(): string[] {
-      const buf = term.buffer.active;
-      const lines: string[] = [];
-      for (let i = 0; i <= buf.cursorY; i++) {
-        lines.push(buf.getLine(i)?.translateToString(true) ?? "");
-      }
-      return lines;
-    },
-    dispose() {
-      term.dispose();
-    },
-  };
-}
-
-// Detect if the current cursor line indicates the panel is waiting for input.
+// Detect if a line indicates the panel is waiting for input.
 // Returns the type of wait, or false if output is still streaming.
 export function detectInputWait(
-  cursorLine: string,
+  line: string,
   panelName: string
 ): "prompt" | "interactive" | false {
-  // Our amux bashrc prompt: "NAME path $ " or "NAME [exit N] path $ "
+  // AMUX_DONE sentinel on its own line
+  if (DONE_SENTINEL_RE.test(line)) return "prompt";
+
+  // Our amux bashrc prompt: "NAME $ " or "NAME [exit N] $ "
   const promptRe = new RegExp(
-    `^${escapeRegex(panelName)}\\s+(\\[exit \\d+\\]\\s+)?\\S.*\\$\\s*$`
+    `^${escapeRegex(panelName)}\\s+(\\[exit \\d+\\]\\s+)?\\$\\s*$`
   );
-  if (promptRe.test(cursorLine)) return "prompt";
+  if (promptRe.test(line)) return "prompt";
 
   // Generic interactive prompts (password, y/n, etc.)
-  if (INTERACTIVE_PROMPT_RE.test(cursorLine)) return "interactive";
+  if (INTERACTIVE_PROMPT_RE.test(line)) return "interactive";
 
   return false;
 }
@@ -257,7 +213,15 @@ export function ensureSession(): void {
 // -- panel registry -----------------------------------------------------------
 
 export function stripAnsi(text: string): string {
-  return text.replace(/\x1b\[[\d;?]*[A-Za-z]/g, "");
+  return text
+    // OSC sequences: ESC ] ... (ST | BEL)
+    .replace(/\x1b\][\s\S]*?(?:\x1b\\|\x07)/g, "")
+    // CSI sequences: ESC [ ... final byte
+    .replace(/\x1b\[[\d;?]*[A-Za-z]/g, "")
+    // Other two-byte escapes: ESC + single char
+    .replace(/\x1b[^[\]]/g, "")
+    // Remaining control chars (except newline/tab)
+    .replace(/[\x00-\x08\x0b-\x1f]/g, "");
 }
 
 export interface WindowMeta {
@@ -413,6 +377,8 @@ function monotonic(): number {
  * Tails the persistent panel log file while fn() runs.
  * The log is written by the pipe-pane set up in ensurePanel.
  * Returns true if the stream timed out (panel still producing output).
+ *
+ * Raw bytes are ANSI-stripped and split into lines. No virtual terminal needed.
  */
 function streamFor(
   target: string,
@@ -431,19 +397,7 @@ function streamFor(
   let pos = 0;
   try { pos = statSync(logPath).size; } catch {}
 
-  // Virtual terminal for clean screen reading
-  const screen = createScreen();
-  let allData = Buffer.alloc(0);
-
-  const cleanup = () => {
-    screen.dispose();
-  };
-
-  const sigHandler = () => {
-    cleanup();
-    process.exit(130);
-  };
-
+  const sigHandler = () => { process.exit(130); };
   process.on("SIGINT", sigHandler);
   process.on("SIGTERM", sigHandler);
 
@@ -452,7 +406,7 @@ function streamFor(
 
     let deadline = monotonic() + timeout;
     let timedOut = true;
-    let emittedLines = 0;
+    let partial = ""; // incomplete line buffer
 
     const fd = openSync(logPath, "r");
     const buf = Buffer.alloc(65536);
@@ -468,30 +422,41 @@ function streamFor(
           const toRead = Math.min(size - pos, buf.length);
           const bytesRead = readSync(fd, buf, 0, toRead, pos);
           if (bytesRead > 0) {
-            const data = buf.subarray(0, bytesRead);
             pos += bytesRead;
-            allData = Buffer.concat([allData, data]);
+            const chunk = buf.toString("utf-8", 0, bytesRead);
+            const text = partial + chunk;
+            const lines = text.split("\n");
 
-            // Feed raw bytes into virtual terminal
-            screen.write(Buffer.from(data));
+            // Last element is incomplete (no trailing newline yet)
+            partial = lines.pop()!;
 
-            // Read clean screen text and emit only new lines
-            const lines = screen.screenLines();
-            if (lines.length > emittedLines) {
-              const completeEnd = Math.max(emittedLines, lines.length - 1);
-              for (let i = emittedLines; i < completeEnd; i++) {
-                process.stdout.write(lines[i] + "\n");
+            for (const raw of lines) {
+              const clean = stripAnsi(raw).trimEnd();
+
+              // Check for done sentinel or prompt — don't emit those
+              const waiting = detectInputWait(clean, name);
+              if (waiting) {
+                timedOut = false;
+                const grace = waiting === "prompt" ? 0.2 : 0.3;
+                const cap = monotonic() + grace;
+                if (cap < deadline) deadline = cap;
+                continue;
               }
-              emittedLines = completeEnd;
+
+              // Emit raw output (ANSI intact)
+              if (raw) process.stdout.write(raw + "\n");
             }
 
-            // Check if the panel is waiting for input
-            const waiting = detectInputWait(screen.cursorLine(), name);
-            if (waiting) {
-              timedOut = false;
-              const grace = waiting === "prompt" ? 0.2 : 0.3;
-              const cap = monotonic() + grace;
-              if (cap < deadline) deadline = cap;
+            // Also check the partial line (cursor sitting on prompt)
+            if (partial) {
+              const cleanPartial = stripAnsi(partial).trimEnd();
+              const waiting = detectInputWait(cleanPartial, name);
+              if (waiting) {
+                timedOut = false;
+                const grace = waiting === "prompt" ? 0.2 : 0.3;
+                const cap = monotonic() + grace;
+                if (cap < deadline) deadline = cap;
+              }
             }
           }
         } else {
@@ -502,18 +467,15 @@ function streamFor(
       closeSync(fd);
     }
 
-    // Flush remaining lines
-    const finalLines = screen.screenLines();
-    for (let i = emittedLines; i < finalLines.length; i++) {
-      const line = finalLines[i];
-      if (line.trim()) process.stdout.write(line + "\n");
+    // Flush remaining partial line
+    if (partial) {
+      const clean = stripAnsi(partial).trimEnd();
+      if (clean && !detectInputWait(clean, name)) {
+        process.stdout.write(partial + "\n");
+      }
     }
 
-    cleanup();
     return timedOut;
-  } catch (e) {
-    cleanup();
-    throw e;
   } finally {
     process.removeListener("SIGINT", sigHandler);
     process.removeListener("SIGTERM", sigHandler);

@@ -132,16 +132,22 @@ describe("socketPath", () => {
 });
 
 describe("detectInputWait", () => {
+  test("detects AMUX_DONE sentinel", () => {
+    assert.equal(detectInputWait("AMUX_DONE:0:server", "server"), "prompt");
+  });
+
+  test("detects AMUX_DONE sentinel with non-zero exit", () => {
+    assert.equal(detectInputWait("AMUX_DONE:127:server", "server"), "prompt");
+  });
+
   test("detects amux prompt (success)", () => {
-    assert.equal(detectInputWait("server ~/myapp $ ", "server"), "prompt");
+    assert.equal(detectInputWait("server $", "server"), "prompt");
+    assert.equal(detectInputWait("server $ ", "server"), "prompt");
   });
 
   test("detects amux prompt (failure)", () => {
-    assert.equal(detectInputWait("server [exit 1] ~/myapp $ ", "server"), "prompt");
-  });
-
-  test("detects amux prompt with deep path", () => {
-    assert.equal(detectInputWait("api ~/src/projects/api $ ", "api"), "prompt");
+    assert.equal(detectInputWait("server [exit 1] $", "server"), "prompt");
+    assert.equal(detectInputWait("server [exit 1] $ ", "server"), "prompt");
   });
 
   test("detects password prompt", () => {
@@ -167,33 +173,30 @@ describe("detectInputWait", () => {
   });
 
   test("does not false-match different panel name", () => {
-    assert.equal(detectInputWait("other ~/path $ ", "server"), false);
+    assert.equal(detectInputWait("other $ ", "server"), false);
   });
 });
 
 describe("DONE_SENTINEL_RE", () => {
   test("matches exit 0", () => {
-    const m = DONE_SENTINEL_RE.exec("\x06AMUX_DONE:0:server\x06");
+    const m = DONE_SENTINEL_RE.exec("AMUX_DONE:0:server");
     assert.ok(m);
     assert.equal(m[1], "0");
     assert.equal(m[2], "server");
   });
 
   test("matches non-zero exit", () => {
-    const m = DONE_SENTINEL_RE.exec("\x06AMUX_DONE:127:build\x06");
+    const m = DONE_SENTINEL_RE.exec("AMUX_DONE:127:build");
     assert.ok(m);
     assert.equal(m[1], "127");
     assert.equal(m[2], "build");
   });
 
-  test("matches sentinel embedded in other output", () => {
-    const m = DONE_SENTINEL_RE.exec("some output\n\x06AMUX_DONE:1:test\x06\nserver ~/path $ ");
-    assert.ok(m);
-    assert.equal(m[1], "1");
-    assert.equal(m[2], "test");
+  test("does not match with prefix text", () => {
+    assert.equal(DONE_SENTINEL_RE.exec("foo AMUX_DONE:0:server"), null);
   });
 
-  test("does not match without delimiters", () => {
-    assert.equal(DONE_SENTINEL_RE.exec("AMUX_DONE:0:server"), null);
+  test("does not match empty", () => {
+    assert.equal(DONE_SENTINEL_RE.exec(""), null);
   });
 });
