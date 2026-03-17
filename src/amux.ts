@@ -120,6 +120,28 @@ export function stripAnsi(text: string): string {
     .replace(/[\x00-\x08\x0b-\x1f]/g, "");
 }
 
+/**
+ * Sanitize terminal output for safe echoing.
+ * Keeps: SGR (colors), cursor movement, erase line/display, \r
+ * Strips: mode switches (?NNNNh/l), OSC (window title), charset, other control
+ */
+export function sanitizeOutput(text: string): string {
+  return text
+    // Strip OSC sequences (window title, hyperlinks, etc.)
+    .replace(/\x1b\][\s\S]*?(?:\x1b\\|\x07)/g, "")
+    // Strip private mode set/reset: \e[?NNNNh or \e[?NNNNl
+    // (bracketed paste, cursor visibility, alt screen, mouse tracking, etc.)
+    .replace(/\x1b\[\?[\d;]*[A-Za-z]/g, "")
+    // Strip charset switching: \e(B, \e## , etc.
+    .replace(/\x1b[()#][A-Za-z0-9]/g, "")
+    // Strip other two-byte escapes (but not CSI \e[ which we handle above)
+    .replace(/\x1b[^[\]()#]/g, "")
+    // Strip control chars except \r (0x0d), \n (0x0a), \t (0x09), \e (0x1b)
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1a\x1c-\x1f]/g, "");
+    // Keeps: \e[...m (SGR), \e[A-D (cursor move), \e[H/f (goto),
+    //        \e[J/K (erase), \e[2K (erase line), \r, \n, \t
+}
+
 // -- line detection -----------------------------------------------------------
 
 export const PROMPT_STR = "amux ready $ ";
@@ -410,15 +432,9 @@ export async function streamLog(
   let aborted = false;
 
   const rawEmit = onLine || ((line: string) => { process.stdout.write(line + "\n"); });
-  /** Strip shell bookkeeping sequences but keep other ANSI (colors etc). */
-  function cleanLine(line: string): string {
-    return line
-      .replace(/\x1b\[\?2004[hl]/g, "")  // bracketed paste mode
-      .replace(/\r/g, "");                // carriage returns
-  }
   const emit = grep
-    ? (line: string) => { const cl = cleanLine(line); if (cl && grep.test(stripAnsi(cl))) rawEmit(cl); }
-    : (line: string) => { const cl = cleanLine(line); if (cl) rawEmit(cl); };
+    ? (line: string) => { const cl = sanitizeOutput(line); if (cl && grep.test(stripAnsi(cl))) rawEmit(cl); }
+    : (line: string) => { const cl = sanitizeOutput(line); if (cl) rawEmit(cl); };
   let commandEchoSkipped = !sentCommand; // true if no command to skip
 
   return new Promise<RunResult>((resolve) => {
@@ -441,7 +457,10 @@ export async function streamLog(
       cleanup();
       if (partial) {
         const clean = stripAnsi(partial).trimEnd();
-        if (clean && !detectEnd(clean, panelName) && !isShellNoise(partial)) emit(partial);
+        if (clean && !detectEnd(clean, panelName) && !isShellNoise(partial)) {
+          const cl = sanitizeOutput(partial);
+          if (cl) rawEmit(cl);
+        }
       }
       resolve({ timedOut, endPos: pos, exitCode, aborted });
     }
@@ -687,7 +706,7 @@ export async function tail(
   const relevant = allLines.slice(startIdx);
   for (const raw of relevant.slice(-_lines)) {
     if (isShellNoise(raw)) continue;
-    const cl = raw.replace(/\x1b\[\?2004[hl]/g, "").replace(/\r/g, "");
+    const cl = sanitizeOutput(raw);
     if (cl) emit(cl);
   }
 
