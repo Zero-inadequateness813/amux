@@ -379,16 +379,18 @@ export default function (pi: ExtensionAPI) {
       return rendered ? new Text(rendered, 0, 0) : undefined;
     },
 
-    async execute(_toolCallId, params, signal, onUpdate) {
+    async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const { name, command } = params;
       const timeout = params.timeout ?? 5;
+      const cwd = ctx?.cwd || process.cwd();
+      const fullCommand = `cd ${cwd} && ${command}`;
 
       // Auto-trail this panel
       if (lastCtx?.hasUI) showTrail(lastCtx, name);
 
       // Stream output lines incrementally via onUpdate
       const lines: string[] = [];
-      const result = await amuxRun(name, command, {
+      const result = await amuxRun(name, fullCommand, {
         timeout,
         signal,
         onLine: (line) => {
