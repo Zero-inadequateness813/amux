@@ -500,10 +500,10 @@ export async function streamLog(
 export async function run(
   name: string,
   command: string,
-  opts?: { timeout?: number; onLine?: (line: string) => void; signal?: AbortSignal }
+  opts?: { timeout?: number; onLine?: (line: string) => void; signal?: AbortSignal; skipNestingCheck?: boolean }
 ): Promise<RunResult> {
   if (!command?.trim()) throw new AmuxError("missing command");
-  rejectNesting(command);
+  if (!opts?.skipNestingCheck) rejectNesting(command);
   const timeout = clampTimeout(opts?.timeout ?? 5);
   const paneId = await ensurePanel(name);
 

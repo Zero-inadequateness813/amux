@@ -24,7 +24,7 @@ import type { FSWatcher } from "node:fs";
 import {
   run as amuxRun, tail as amuxTail, sendKeys as amuxSendKeys,
   kill as amuxKill, list as amuxList, panels as amuxPanels,
-  panelLogPath, panelCwd, ensurePanel, config,
+  panelLogPath, panelCwd, ensurePanel, rejectNesting, config,
   type RunResult,
 } from "../src/amux.ts";
 
@@ -382,6 +382,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const { name, command } = params;
       const timeout = params.timeout ?? 5;
+      rejectNesting(command);
       const cwd = ctx?.cwd || process.cwd();
       const fullCommand = `cd ${cwd} && ${command}`;
 
@@ -391,6 +392,7 @@ export default function (pi: ExtensionAPI) {
       // Stream output lines incrementally via onUpdate
       const lines: string[] = [];
       const result = await amuxRun(name, fullCommand, {
+        skipNestingCheck: true,
         timeout,
         signal,
         onLine: (line) => {
