@@ -9,7 +9,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { keyHint } from "@mariozechner/pi-coding-agent";
+import { keyHint, truncateTail } from "@mariozechner/pi-coding-agent";
 import { Text, Key, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { readdirSync, readFileSync, statSync, watch as fsWatch, mkdirSync,
@@ -320,6 +320,8 @@ function renderOutput(output: string, expanded: boolean, theme: any): string {
 }
 
 function getTextContent(result: any): string {
+  // Prefer full output from details (untruncated) for rendering
+  if (result.details?.fullOutput) return result.details.fullOutput;
   return (result.content || []).filter((c: any) => c.type === "text").map((c: any) => c.text || "").join("\n");
 }
 
@@ -433,9 +435,13 @@ export default function (pi: ExtensionAPI) {
     },
 
     renderResult(result, { expanded, isPartial }, theme) {
-      if (isPartial) return new Text(theme.fg("muted", "\u2807 running\u2026"), 0, 0);
       const output = getTextContent(result);
       if (result.isError) return new Text(theme.fg("error", output || "error"), 0, 0);
+      if (isPartial) {
+        // Streaming: show last N lines of output so far
+        if (!output?.trim()) return new Text(theme.fg("muted", "\u2807 running\u2026"), 0, 0);
+        return new Text(renderOutput(output, expanded, theme), 0, 0);
+      }
       const rendered = renderOutput(output, expanded, theme);
       return rendered ? new Text(rendered, 0, 0) : undefined;
     },
@@ -465,17 +471,23 @@ export default function (pi: ExtensionAPI) {
 
       let text = lines.join("\n");
 
+      let suffix = "";
       if (result.aborted) {
-        text += `\n\n⊘ aborted \u2014 continue with:\n  amux_tail(name: "${name}", follow: true, offset: ${result.endPos})`;
+        suffix = `\n\n⊘ aborted \u2014 continue with:\n  amux_tail(name: "${name}", follow: true, offset: ${result.endPos})`;
       } else if (result.timedOut) {
-        text += `\n\n\u23f3 timeout ${timeout}s \u2014 continue with:\n  amux_tail(name: "${name}", follow: true, offset: ${result.endPos})`;
+        suffix = `\n\n\u23f3 timeout ${timeout}s \u2014 continue with:\n  amux_tail(name: "${name}", follow: true, offset: ${result.endPos})`;
       } else if (result.exitCode !== undefined) {
-        text += result.exitCode === 0 ? "\n\nSUCCESS" : `\n\nFAIL EXITCODE:${result.exitCode}`;
+        suffix = result.exitCode === 0 ? "\n\nSUCCESS" : `\n\nFAIL EXITCODE:${result.exitCode}`;
       }
 
+      // Truncate for LLM (last 2000 lines / 50KB), keep full for renderResult
+      const fullText = text + suffix;
+      const truncated = truncateTail(text);
+      const llmText = truncated.content + suffix;
+
       return {
-        content: [{ type: "text", text: text || `started in panel ${name}` }],
-        details: { panel: name, command, exitCode: result.exitCode, timedOut: result.timedOut, endPos: result.endPos },
+        content: [{ type: "text", text: llmText || `started in panel ${name}` }],
+        details: { panel: name, command, exitCode: result.exitCode, timedOut: result.timedOut, endPos: result.endPos, fullOutput: fullText },
       };
     },
   });
@@ -515,9 +527,12 @@ export default function (pi: ExtensionAPI) {
     },
 
     renderResult(result, { expanded, isPartial }, theme) {
-      if (isPartial) return new Text(theme.fg("muted", "\u2807 tailing\u2026"), 0, 0);
       const output = getTextContent(result);
       if (result.isError) return new Text(theme.fg("error", output || "error"), 0, 0);
+      if (isPartial) {
+        if (!output?.trim()) return new Text(theme.fg("muted", "\u2807 tailing\u2026"), 0, 0);
+        return new Text(renderOutput(output, expanded, theme), 0, 0);
+      }
       const rendered = renderOutput(output, expanded, theme);
       return rendered ? new Text(rendered, 0, 0) : undefined;
     },
@@ -539,17 +554,23 @@ export default function (pi: ExtensionAPI) {
       });
 
       let text = lines.join("\n");
+
+      let suffix = "";
       if (result.aborted) {
-        text += `\n\n⊘ aborted \u2014 continue with:\n  amux_tail(name: "${params.name}", follow: true, offset: ${result.endPos})`;
+        suffix = `\n\n⊘ aborted \u2014 continue with:\n  amux_tail(name: "${params.name}", follow: true, offset: ${result.endPos})`;
       } else if (result.timedOut) {
-        text += `\n\n\u23f3 timeout ${params.timeout ?? 60}s \u2014 continue with:\n  amux_tail(name: "${params.name}", follow: true, offset: ${result.endPos})`;
+        suffix = `\n\n\u23f3 timeout ${params.timeout ?? 60}s \u2014 continue with:\n  amux_tail(name: "${params.name}", follow: true, offset: ${result.endPos})`;
       } else if (result.exitCode !== undefined) {
-        text += result.exitCode === 0 ? "\n\nSUCCESS" : `\n\nFAIL EXITCODE:${result.exitCode}`;
+        suffix = result.exitCode === 0 ? "\n\nSUCCESS" : `\n\nFAIL EXITCODE:${result.exitCode}`;
       }
 
+      const fullText = text + suffix;
+      const truncated = truncateTail(text);
+      const llmText = truncated.content + suffix;
+
       return {
-        content: [{ type: "text", text: text || "(empty)" }],
-        details: { panel: params.name, follow: !!params.follow, lines: params.lines ?? 10, offset: params.offset, endPos: result.endPos },
+        content: [{ type: "text", text: llmText || "(empty)" }],
+        details: { panel: params.name, follow: !!params.follow, lines: params.lines ?? 10, offset: params.offset, endPos: result.endPos, fullOutput: fullText },
       };
     },
   });

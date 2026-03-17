@@ -431,7 +431,12 @@ export async function streamLog(
   let exitCode: number | undefined;
   let aborted = false;
 
-  const rawEmit = onLine || ((line: string) => { process.stdout.write(line + "\n"); });
+  const cliEmit = (line: string) => { process.stdout.write(line + "\n"); };
+  // For onLine callbacks (extension): also strip \r since it's not a live terminal
+  const libEmit = onLine
+    ? (line: string) => { onLine(line.replace(/\r/g, "")); }
+    : null;
+  const rawEmit = libEmit || cliEmit;
   const emit = grep
     ? (line: string) => { const cl = sanitizeOutput(line); if (cl && grep.test(stripAnsi(cl))) rawEmit(cl); }
     : (line: string) => { const cl = sanitizeOutput(line); if (cl) rawEmit(cl); };
