@@ -1,34 +1,39 @@
 #!/usr/bin/env -S node --experimental-strip-types --experimental-transform-types --no-warnings
 
 import {
-  list, watch, panels, terminate, shell, sendKeys, tail, kill,
-  AmuxError,
+  list, watch, panels, terminate, run, sendKeys, tail, panelGet, kill,
+  AmuxError, MAX_TIMEOUT,
 } from "../src/amux.ts";
 
 const HELP = `amux — agentic mux
 
-Named panels backed by tmux. Created on first use, persistent across commands.
+Named panels backed by tmux. Panels are panes tiled within a tab per cwd.
 
 For humans:
-  amux watch                see all panels live (read-only, Ctrl-Q to detach)
-  amux watch -r             attach read-only (can't type into panels)
+  amux watch                see all tabs/panels live (Ctrl-Q to detach)
+  amux watch -r             attach read-only
   amux list                 show active panels
   amux terminate --yes      shut down all panels
 
   Inside watch mode:
-    M-1..9                  switch between panels
+    M-1..9                  switch between tabs
     Esc                     scroll mode (copy-mode)
     M-q                     detach
     M-t                     terminate all panels
 
 For agents:
-  amux NAME shell CMD...    run command in a panel, stream output back
+  amux NAME run CMD...      run command in panel, stream output (default: 5s)
+  amux NAME tail [opts]     tail panel log (default: 10 lines, 60s timeout)
+  amux NAME panel-get       dump tmux panel content (--full for scrollback)
   amux NAME send-keys K...  send keystrokes to a panel
-  amux NAME tail [opts]     tail panel output (--follow, --lines=N, --timeout=N)
   amux NAME kill            remove a single panel
 
 Options:
-  -tN                       timeout in seconds (default: -t5)
+  -tN                       timeout in seconds (default depends on command, max ${MAX_TIMEOUT})
+
+tail options:
+  --follow / -f             follow live output until done or timeout
+  --lines=N                 number of lines (default: 10)
 
 send-keys reference:
   C-c C-d C-z               ctrl combos
@@ -38,29 +43,29 @@ send-keys reference:
   "some text"               literal text (no Enter added)
 
 Examples:
-  amux server shell "npm start"           start a dev server
-  amux watch                              see it running
-  amux server tail                        last 10 lines of output
-  amux server tail --follow               tail -f until done or 30s
+  amux server run "npm start"             start a dev server
+  amux watch                              see tabs with tiled panels
+  amux server tail                        last 10 lines
+  amux server tail --follow               tail -f until done or 60s
   amux server tail --lines=50             last 50 lines
+  amux server panel-get                   dump panel screen
   amux server send-keys C-c               interrupt it
-  amux repl shell "irb"                   start a REPL
+  amux repl run "irb"                     start a REPL
   amux repl send-keys "puts :hi" Enter    type + enter
-  amux repl send-keys C-d                 EOF to exit
   amux server kill                        remove one panel
   amux terminate --yes                    shut down everything
 `;
 
-// Parse -tN timeout flag from anywhere in args (default: 5s)
+// Parse -tN timeout flag from anywhere in args
 const args = process.argv.slice(2);
-let timeout = 5;
+let timeoutOverride: number | undefined;
 const tIdx = args.findIndex((a) => /^-t\d+$/.test(a));
 if (tIdx !== -1) {
-  timeout = parseInt(args[tIdx].slice(2), 10);
+  timeoutOverride = Math.min(parseInt(args[tIdx].slice(2), 10), MAX_TIMEOUT);
   args.splice(tIdx, 1);
 }
 
-const COMMANDS = ["shell", "send-keys", "tail", "read", "kill"];
+const COMMANDS = ["run", "shell", "tail", "read", "panel-get", "send-keys", "kill"];
 
 try {
   switch (args[0]) {
@@ -71,14 +76,11 @@ try {
     case "terminate":
       if (!args.includes("--yes")) {
         const p = panels();
-        const entries = Object.entries(p);
-        if (entries.length > 0) {
+        if (p.length > 0) {
           console.log("active panels:");
-          entries
-            .sort((a, b) => a[1].index - b[1].index)
-            .forEach(([name, meta]) => {
-              console.log(`  ${meta.index}\t${name}\t${meta.id}`);
-            });
+          for (const pane of p) {
+            console.log(`  ${pane.windowName}/${pane.paneName}\t${pane.paneId}`);
+          }
         }
         process.stderr.write("confirm with: amux terminate --yes\n");
         process.exit(1);
@@ -90,7 +92,7 @@ try {
     case "watch":
     case "attach":
       watch({ readonly: args.includes("-r") });
-      break; // unreachable — watch calls process.exit
+      break;
 
     case undefined:
     case "-h":
@@ -112,14 +114,16 @@ try {
   const rest = args.slice(2);
 
   switch (cmd) {
+    case "run":
     case "shell": {
       const command = rest.length === 1 ? rest[0] : rest.join(" ");
       if (!command) {
         process.stderr.write(HELP);
         process.exit(1);
       }
-      const shellTimedOut = shell(name, command, { timeout });
-      if (shellTimedOut) {
+      const timeout = timeoutOverride ?? 5;
+      const timedOut = run(name, command, { timeout });
+      if (timedOut) {
         process.stdout.write(`\ntimeout ${timeout}s: still running. Use \`amux ${name} tail\` to check output.\n`);
       }
       break;
@@ -130,8 +134,9 @@ try {
         process.stderr.write(HELP);
         process.exit(1);
       }
-      const keysTimedOut = sendKeys(name, rest, { timeout });
-      if (keysTimedOut) {
+      const timeout = timeoutOverride ?? 5;
+      const timedOut = sendKeys(name, rest, { timeout });
+      if (timedOut) {
         process.stdout.write(`\ntimeout ${timeout}s: still running. Use \`amux ${name} tail\` to check output.\n`);
       }
       break;
@@ -143,10 +148,17 @@ try {
       let lines = 10;
       const linesArg = rest.find((a) => a.startsWith("--lines="));
       if (linesArg) lines = parseInt(linesArg.split("=")[1], 10) || 10;
+      const timeout = timeoutOverride ?? 60;
       const stillRunning = tail(name, { follow, lines, timeout });
       if (follow && stillRunning) {
-        process.stdout.write(`\ntimeout ${timeout}s: still running. Use \`amux ${name} tail\` to check output.\n`);
+        process.stdout.write(`\ntimeout ${timeout}s: still running.\n`);
       }
+      break;
+    }
+
+    case "panel-get": {
+      const full = rest.includes("--full");
+      process.stdout.write(panelGet(name, { full }));
       break;
     }
 

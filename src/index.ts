@@ -3,9 +3,10 @@
 
 export {
   // Core API
-  shell,
+  run,
   sendKeys,
   tail,
+  panelGet,
   kill,
   list,
   watch,
@@ -13,10 +14,7 @@ export {
 
   // Panel management
   ensurePanel,
-  findPanel,
   panels,
-  windowMap,
-  type WindowMeta,
 
   // Session management
   ensureSession,
@@ -25,12 +23,14 @@ export {
 
   // Configuration
   config,
+  MAX_TIMEOUT,
 
   // Detection
   detectInputWait,
   normalizeKey,
   validatePanelName,
   stripAnsi,
+  clampTimeout,
 
   // Panel logs
   panelLogPath,
@@ -52,4 +52,8 @@ export {
   VALID_PANEL_NAME,
   INTERACTIVE_PROMPT_RE,
   DONE_SENTINEL_RE,
+
+  // Types
+  type TabInfo,
+  type PaneInfo,
 } from "./amux.ts";

@@ -72,7 +72,7 @@ async function amuxAsync(args: string[], timeout = 10): Promise<{ stdout: string
 
 /** Fire a command into a panel without waiting — async. */
 async function amuxFireAndForget(name: string, command: string): Promise<void> {
-  await amuxAsync([name, "shell", command, "-t0"], 5);
+  await amuxAsync([name, "run", command, "-t0"], 5);
 }
 
 // Sentinel emitted by bashrc PROMPT_COMMAND on its own line

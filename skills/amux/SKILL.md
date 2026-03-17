@@ -5,7 +5,7 @@ description: Run background tasks, long-running processes, servers, and anything
 
 # amux — background panels for agents
 
-`amux` manages named tmux panels for long-running processes. Panels are created automatically on first use, persist across commands, and their names never drift.
+`amux` manages named tmux panels for long-running processes. Panels are created automatically on first use, persist across commands, and are tiled within tabs grouped by working directory.
 
 Each panel runs a minimal bash shell with a prompt showing the panel name and exit codes:
 ```
@@ -19,7 +19,7 @@ Use the amux tools — do NOT shell out to `amux` via bash.
 
 ### amux_shell
 
-Run a command in a named panel. Creates the panel if it doesn't exist. Streams output back until the prompt returns or timeout is hit.
+Run a command in a named panel. Creates the panel if it doesn't exist. Streams output back until the prompt returns or timeout (default 5s, max 300s).
 
 ```
 amux_shell(name: "server", command: "npm start")
@@ -28,7 +28,16 @@ amux_shell(name: "server", command: "npm start", timeout: 10)
 
 Panel names should be short and descriptive: `server`, `build`, `test`, `worker`, `repl`.
 
-Reusing a panel name runs the new command in the same panel — history and state are preserved.
+### amux_tail
+
+Tail output from a panel. Returns last N lines by default, optionally follows live output. Default timeout 60s, max 300s.
+
+```
+amux_tail(name: "server")                              # last 10 lines
+amux_tail(name: "server", lines: 50)                   # last 50 lines
+amux_tail(name: "server", follow: true)                # follow until done or 60s
+amux_tail(name: "server", follow: true, timeout: 120)  # follow with custom timeout
+```
 
 ### amux_send_keys
 
@@ -47,17 +56,6 @@ amux_send_keys(name: "server", keys: ["C-c"])
 | Special | `Enter` `Tab` `Esc` `Space` `BSpace` |
 | Arrows | `Up` `Down` `Left` `Right` |
 | Literal text | `"hello world"` (sent as typed, no Enter) |
-
-### amux_tail
-
-Tail output from a panel. Returns last N lines by default, optionally follows live output.
-
-```
-amux_tail(name: "server")                              # last 10 lines
-amux_tail(name: "server", lines: 50)                   # last 50 lines
-amux_tail(name: "server", follow: true)                # follow until done or 30s
-amux_tail(name: "server", follow: true, timeout: 60)   # follow with custom timeout
-```
 
 ### amux_kill
 
@@ -130,7 +128,8 @@ amux_kill(name: "server")           # just one panel
 ## Key Behaviors
 
 - **Auto-creation**: `amux_shell` and `amux_send_keys` create panels on first use. No setup step.
+- **Tiled layout**: Panels from the same cwd share a tmux tab. `amux watch` shows tabs with tiled panes inside.
 - **Persistence**: Panels survive across tool calls. They live in tmux.
-- **Timeout**: Default 5 seconds for shell. When a command times out, the output tells you the panel is still running and to use `amux_tail` to check later.
+- **Timeout cap**: All timeouts are capped at 300 seconds (5 minutes).
 - **Deterministic names**: Panel titles are locked. Shell escape sequences cannot rename them.
 - **Isolated tmux**: amux uses its own tmux socket and config. It never conflicts with personal tmux.

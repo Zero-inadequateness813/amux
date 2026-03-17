@@ -1,9 +1,9 @@
 import { describe, test } from "node:test";
 import { strict as assert } from "node:assert";
 import {
-  stripAnsi, normalizeKey, validatePanelName, socketPath, config,
+  stripAnsi, normalizeKey, validatePanelName, socketPath, config, clampTimeout,
   detectInputWait, InvalidPanelName, INTERACTIVE_PROMPT_RE,
-  DONE_SENTINEL_RE,
+  DONE_SENTINEL_RE, MAX_TIMEOUT,
 } from "../src/amux.ts";
 
 describe("stripAnsi", () => {
@@ -102,8 +102,8 @@ describe("validatePanelName", () => {
     assert.throws(() => validatePanelName("path/to"), (e: any) => e instanceof InvalidPanelName);
   });
 
-  test("rejects reserved init panel", () => {
-    assert.throws(() => validatePanelName(config.initPanel), (e: any) => e instanceof InvalidPanelName);
+  test("rejects reserved characters", () => {
+    assert.throws(() => validatePanelName("a.b"), (e: any) => e instanceof InvalidPanelName);
   });
 
   test("allows alphanumeric, dash, underscore", () => {
@@ -198,5 +198,21 @@ describe("DONE_SENTINEL_RE", () => {
 
   test("does not match empty", () => {
     assert.equal(DONE_SENTINEL_RE.exec(""), null);
+  });
+});
+
+describe("clampTimeout", () => {
+  test("passes through normal values", () => {
+    assert.equal(clampTimeout(5), 5);
+    assert.equal(clampTimeout(60), 60);
+  });
+
+  test("caps at MAX_TIMEOUT", () => {
+    assert.equal(clampTimeout(999), MAX_TIMEOUT);
+    assert.equal(clampTimeout(MAX_TIMEOUT), MAX_TIMEOUT);
+  });
+
+  test("floors at 0", () => {
+    assert.equal(clampTimeout(-1), 0);
   });
 });
