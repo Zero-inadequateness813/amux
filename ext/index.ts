@@ -303,17 +303,21 @@ function stopTrailRefresh(): void {
 
 // -- rendering helpers --------------------------------------------------------
 
-const PREVIEW_LINES = 5;
+const PREVIEW_LINES = 8;
 
 function renderOutput(output: string, expanded: boolean, theme: any): string {
   const trimmed = output.trim();
   if (!trimmed) return "";
   const lines = trimmed.split("\n");
-  const maxLines = expanded ? lines.length : PREVIEW_LINES;
-  const display = lines.slice(0, maxLines);
-  const remaining = lines.length - maxLines;
-  let text = display.map((l) => theme.fg("toolOutput", l)).join("\n");
-  if (remaining > 0) text += "\n" + theme.fg("muted", `\u2026 ${remaining} more lines, `) + keyHint("expandTools", "to expand");
+  if (expanded) {
+    return lines.map((l) => theme.fg("toolOutput", l)).join("\n");
+  }
+  // Collapsed: show last N lines (tail-style, more useful than head)
+  const skipped = Math.max(0, lines.length - PREVIEW_LINES);
+  const display = lines.slice(-PREVIEW_LINES);
+  let text = "";
+  if (skipped > 0) text += theme.fg("muted", `\u2026 ${skipped} earlier lines, `) + keyHint("expandTools", "to expand") + "\n";
+  text += display.map((l) => theme.fg("toolOutput", l)).join("\n");
   return text;
 }
 
