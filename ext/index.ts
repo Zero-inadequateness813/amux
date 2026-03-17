@@ -160,7 +160,9 @@ let trailScrollOffset = 0;  // 0 = auto-follow (show latest), >0 = lines scrolle
 let trailTotalLines = 0;    // total lines available in log
 let trailPinned = false;    // true when user has scrolled up
 
-/** Read all available lines from panel log (up to a reasonable buffer). */
+/** Read all available lines from panel log (up to a reasonable buffer).
+ *  Minimal filtering — this is the user-facing trail widget, show almost everything.
+ *  Only strip private mode sequences and \r, keep colors and content. */
 function readPanelLogAll(name: string): string[] {
   const logPath = join(PANEL_DIR, `${name}.log`);
   try {
@@ -172,18 +174,14 @@ function readPanelLogAll(name: string): string[] {
       const start = Math.max(0, st.size - CHUNK);
       const buf = Buffer.alloc(Math.min(CHUNK, st.size));
       readSync(fd, buf, 0, buf.length, start);
-      const text = buf.toString("utf-8").replace(/\x1b\[[\d;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b\(B|\r/g, "");
+      const text = buf.toString("utf-8")
+        .replace(/\x1b\[\?[\d;]*[A-Za-z]/g, "")   // strip private modes (?2004h etc)
+        .replace(/\x1b\][\s\S]*?(?:\x1b\\|\x07)/g, "")  // strip OSC (window title)
+        .replace(/\x1b[()#][A-Za-z0-9]/g, "")      // strip charset switching
+        .replace(/\r/g, "");                         // strip \r
       const lines = text.split("\n");
       if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
-      // Filter shell noise
-      return lines.filter(l => {
-        const t = l.trim();
-        if (!t) return false;
-        if (/^amux ready \$/.test(t)) return false;
-        if (/^SUCCESS$/.test(t)) return false;
-        if (/^FAIL EXITCODE:\d+$/.test(t)) return false;
-        return true;
-      });
+      return lines;
     } finally { closeSync(fd); }
   } catch { return []; }
 }
