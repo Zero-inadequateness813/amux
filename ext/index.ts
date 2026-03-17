@@ -438,7 +438,6 @@ export default function (pi: ExtensionAPI) {
       const output = getTextContent(result);
       if (result.isError) return new Text(theme.fg("error", output || "error"), 0, 0);
       if (isPartial) {
-        // Streaming: show last N lines of output so far
         if (!output?.trim()) return new Text(theme.fg("muted", "\u2807 running\u2026"), 0, 0);
         return new Text(renderOutput(output, expanded, theme), 0, 0);
       }
