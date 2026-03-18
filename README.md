@@ -1,6 +1,6 @@
 # amux — agentic mux
 
-Named tmux panels for AI agents and humans. Panels are created automatically on first use, tiled within tabs grouped by working directory.
+Named tmux panels for AI agents and humans. Run commands in persistent background panels, tail their output with byte-offset continuation, and never lose a line.
 
 ## Install
 
@@ -8,9 +8,41 @@ Named tmux panels for AI agents and humans. Panels are created automatically on 
 npm install -g https://github.com/tobi/amux
 ```
 
+## Terminology & Architecture
+
+```
+┌─ Global Amux ─────────────────────────────────────────────────────────┐
+│  One tmux server (own socket + config, separate from your tmux)       │
+│                                                                       │
+│  ┌─ Session: my-proje-a3f1 ──────────────────────────────────────┐   │
+│  │  (derived from /Users/me/src/my-project — has .git)           │   │
+│  │  = one tmux window (tab)                                      │   │
+│  │                                                               │   │
+│  │  ┌─ Panel: server ─┐  ┌─ Panel: tests ──┐  ┌─ Panel: build ┐│   │
+│  │  │ npm start        │  │ npm test         │  │ make          ││   │
+│  │  │ listening :3000  │  │ 47 passed        │  │ done          ││   │
+│  │  └─────────────────┘  └──────────────────┘  └──────────────┘│   │
+│  │  (dwm-style tiling)                                          │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                       │
+│  ┌─ Session: other-re-b7e2 ─────────────────────────────────────┐   │
+│  │  (derived from /Users/me/src/other-repo)                      │   │
+│  │  ┌─ Panel: worker ──┐                                        │   │
+│  │  │ ruby worker.rb    │                                        │   │
+│  │  └──────────────────┘                                        │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+└───────────────────────────────────────────────────────────────────────┘
+```
+
+**Global Amux** — A single tmux server with its own socket and config, completely separate from your personal tmux. Everything lives here.
+
+**Session** — Each unique project directory gets its own session, which maps to one tmux window (tab). The project root is found by looking for `.git` up to 2 levels from the working directory. The session is named `basename[0:8]-hash[0:4]` where hash is the first 4 hex digits of SHA-256 of the resolved path. Example: `/Users/me/src/my-project` → `my-proje-a3f1`.
+
+**Panel** — Created with `amux {name} run '...'`. Each panel is a tmux pane within its session's tab. Panels tile automatically in dwm-style layout. Named by whatever you pass as `{name}` — `server`, `tests`, `build`, etc.
+
 ## The run → tail workflow
 
-This is the primary way amux is used. The agent starts a command with `run`, which streams output for a short timeout (default 5s). If the command finishes in time, you get `SUCCESS` or `FAIL EXITCODE:N`. If it times out, the output includes a **continuation hint** with the byte offset where output stopped — the agent then calls `tail` with that offset to pick up exactly where it left off.
+The primary workflow. Start a command with `run`, which streams output for a short timeout (default 5s). If it finishes in time, you get `SUCCESS` or `FAIL EXITCODE:N`. If it times out, the output includes a **continuation hint** with the byte offset — call `tail` with that offset to pick up exactly where you left off.
 
 ### Example: fast command (completes within timeout)
 
@@ -55,7 +87,7 @@ No output is lost. No output is duplicated. The byte offset is the exact positio
 
 ### Example: chained timeouts
 
-If `tail` also times out (very long-running process), it prints another continuation hint:
+If `tail` also times out, it prints another continuation hint:
 
 ```
 $ amux build tail -f -c 4820 -t60
@@ -65,17 +97,17 @@ $ amux build tail -f -c 4820 -t60
   amux_tail(name: "build", follow: true, offset: 128400)
 ```
 
-The agent can keep chaining `tail` calls until the command completes.
+The agent keeps chaining `tail` calls until the command completes.
 
 ## Commands
 
 ### `amux NAME run CMD`
 
-Run a command in a panel. Creates the panel if it doesn't exist. Streams all output from the start of the command.
+Run a command in a panel. Creates the panel if it doesn't exist. Streams output from the start.
 
 - Default timeout: **5 seconds** (`-t5`)
-- Max timeout: 300 seconds (5 minutes)
-- Prints `SUCCESS` or `FAIL EXITCODE:N` on completion
+- Max timeout: 300 seconds
+- Prints `SUCCESS` / `FAIL EXITCODE:N` on completion
 - Prints continuation hint with byte offset on timeout
 
 ```bash
@@ -89,36 +121,27 @@ Tail the panel log. Without `--follow`, prints the last N lines and exits.
 
 - Default lines: **10** (`--lines=10`)
 - Default timeout: **60 seconds** (`-t60`)
-- `-c OFFSET`: start from byte offset (for continuation after run/tail timeout)
+- `-c OFFSET`: start from byte offset (for continuation)
 - `--follow` / `-f`: keep tailing until command completes or timeout
 
 ```bash
 amux server tail                      # last 10 lines
-amux server tail --lines=50           # last 50 lines  
+amux server tail --lines=50           # last 50 lines
 amux server tail -f                   # follow until done or 60s
 amux server tail -f -c 4820          # continue from offset
 amux server tail -f -c 4820 -t120   # continue with 2min timeout
 ```
 
-### `amux NAME panel-get`
-
-Dump the raw tmux panel screen content (what you'd see if you looked at the terminal).
-
-```bash
-amux server panel-get                 # visible screen
-amux server panel-get --full          # full scrollback
-```
-
 ### `amux NAME send-keys K...`
 
-Send keystrokes to a panel. Each argument is a separate key.
+Send keystrokes to a panel.
 
 ```bash
 amux server send-keys C-c            # Ctrl-C
 amux repl send-keys "puts :hi" Enter # type + enter
 ```
 
-Key reference: `C-c` `C-d` `C-z` `Enter` `Tab` `Esc` `Space` `BSpace` `Up` `Down` `Left` `Right`
+Keys: `C-c` `C-d` `C-z` `Enter` `Tab` `Esc` `Space` `BSpace` `Up` `Down` `Left` `Right`
 
 ### `amux NAME kill`
 
@@ -126,40 +149,38 @@ Remove a panel.
 
 ### `amux list`
 
-List all active panels, grouped by tab.
+List all active panels grouped by session.
 
 ### `amux watch`
 
-Open tmux to see all tabs and panels live. Tabs are cwd directories, panels are tiled panes within each tab.
+Open tmux to see all sessions and panels live.
 
-- `M-1` through `M-9`: switch tabs
+- `M-1`…`M-9`: switch sessions
 - `Esc`: scroll mode
 - `M-q`: detach
 - `M-t`: terminate all
 
 ### `amux terminate --yes`
 
-Destroy all panels and the tmux session.
+Destroy everything and kill the tmux server.
 
-## Architecture
+## Internals
 
-- **One tmux session** (`amux`) with its own socket — never conflicts with personal tmux
-- **Tabs** (tmux windows) are named after the working directory basename
-- **Panels** (tmux panes) are tiled within tabs, each running a minimal bash shell
-- **Logs** are written to `~/.amux/panels/{name}.log` via tmux pipe-pane
-- **Sidecar files** track pane→name mapping since tmux doesn't expose pane env vars
-- **Sentinels**: bash PROMPT_COMMAND prints `SUCCESS` or `FAIL EXITCODE:N` on its own line after each command
-- **Prompt**: `name $ ` (no path, minimal, deterministic)
-- **Timeout cap**: all timeouts capped at 300 seconds (5 minutes)
+- **Logs**: `~/.amux/panels/{name}.log` via tmux `pipe-pane`
+- **Sidecar files**: `.pane` and `.tab` track tmux pane ID → panel name mapping
+- **Sentinels**: bash `PROMPT_COMMAND` prints `SUCCESS` or `FAIL EXITCODE:N` after each command
+- **Prompt**: `amux ready $ ` — static, deterministic, trivially matchable
+- **Nesting guard**: rejects commands containing `amux`, `tmux`, or `zellij`
+- **Timeout cap**: all timeouts capped at 300s (5 minutes)
 
 ## pi extension
 
 amux ships as a [pi](https://github.com/mariozechner/pi) package with tools:
 
-- `amux_shell` — wraps `run` with async completion detection
-- `amux_tail` — wraps `tail` with offset support for continuation
+- `amux_shell` — run a command in a panel (wraps `run`)
+- `amux_tail` — tail panel output with offset continuation
 - `amux_send_keys` — send keystrokes
 - `amux_kill` — remove a panel
 - `amux_list` — list panels
 
-The extension also provides a tab bar widget with `⌥1-9` hotkeys for panel trailing.
+The extension truncates output for the LLM (last 2000 lines / 50KB, same as pi's built-in bash tool) while showing full output in the UI widget. A tab bar widget with `⌥1`–`⌥9` hotkeys provides live panel trailing.

@@ -1,9 +1,12 @@
 // amux — agentic mux
 //
 // Architecture:
-//   - One global tmux session ("amux") with its own socket and config.
-//   - Each unique cwd maps to a tmux window (tab), named after the directory.
-//   - Each named panel is a tmux pane tiled within that window.
+//   - Global amux: one tmux server with its own socket and config, separate
+//     from the user's regular tmux. All sessions live here.
+//   - Session: each unique project root (detected via .git, up to 2 levels)
+//     maps to a tmux window (tab). Named basename[0:8]-hash[0:4].
+//   - Panel: each `amux run {name} '...'` creates a tmux pane within
+//     its session's tab. Panels tile automatically (dwm-style).
 //
 // Library API is fully async — safe for embedding in event loops (pi extensions).
 // CLI bin wraps with top-level await.
@@ -11,7 +14,8 @@
 import { existsSync, mkdirSync, statSync, rmSync, openSync, readSync, readFileSync,
   readdirSync, closeSync, writeFileSync, watch as fsWatch } from "fs";
 import { homedir } from "os";
-import { join, resolve, dirname, basename } from "path";
+import { join, resolve, dirname, basename, sep } from "path";
+import { createHash } from "crypto";
 import { spawn, execFileSync } from "child_process";
 import { fileURLToPath } from "url";
 import type { FSWatcher } from "fs";
@@ -249,9 +253,35 @@ export async function ensureSession(): Promise<void> {
 
 // -- tab (window) management --------------------------------------------------
 
+/**
+ * Derive the session (tab) name from a working directory.
+ *
+ * Looks up to 2 levels for a .git directory to find the project root.
+ * Uses: basename[0:8]-hash[0:4]  (hash of the full resolved path).
+ * Example: /Users/me/src/my-project → my-proje-a3f1
+ */
+function cwdToSessionPath(cwd: string): string {
+  const abs = resolve(cwd);
+  // Walk up to 2 parents looking for .git
+  let dir = abs;
+  for (let i = 0; i < 3; i++) {  // check cwd, parent, grandparent
+    try {
+      if (existsSync(join(dir, ".git"))) return dir;
+    } catch {}
+    const parent = dirname(dir);
+    if (parent === dir) break;  // filesystem root
+    dir = parent;
+  }
+  return abs;  // no git root found, use cwd as-is
+}
+
 function cwdToTabName(cwd: string): string {
-  const name = basename(resolve(cwd)) || "root";
-  return name.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 30);
+  const sessionPath = cwdToSessionPath(cwd);
+  const name = (basename(sessionPath) || "root")
+    .replace(/[^a-zA-Z0-9_-]/g, "-")
+    .slice(0, 8);
+  const hash = createHash("sha256").update(sessionPath).digest("hex").slice(0, 4);
+  return `${name}-${hash}`;
 }
 
 export interface TabInfo { windowId: string; windowIndex: number; windowName: string; }

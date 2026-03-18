@@ -5,9 +5,9 @@ description: Run background tasks, long-running processes, servers, and anything
 
 # amux — background panels for agents
 
-Named tmux panels for long-running processes. Panels are created on first use, tiled within tabs grouped by cwd.
+Named tmux panels for long-running processes. Panels are created on first use, tiled within sessions grouped by project root.
 
-Prompt: `name $ ` (success) or `name [exit N] $ ` (failure)
+Architecture: one global tmux server (separate from your tmux) → sessions (one per project, detected via .git) → panels (named panes, dwm-style tiling).
 
 ## The run → tail workflow
 
@@ -103,7 +103,7 @@ amux_list()
 ## Key Behaviors
 
 - **Auto-creation**: panels created on first use. No setup.
-- **Tiled layout**: panels from same cwd share a tmux tab.
+- **Sessions**: panels from the same project root share a session (tmux tab).
 - **Timeout cap**: all timeouts max 300s (5 minutes).
 - **Completion signals**: `SUCCESS` or `FAIL EXITCODE:N` printed on own line.
 - **Byte offsets**: timeout messages include exact byte offset for seamless continuation.
