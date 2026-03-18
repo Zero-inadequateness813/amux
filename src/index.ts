@@ -20,6 +20,8 @@ export {
   ensureSession,
   hasSession,
   serverRunning,
+  cwdToSessionPath,
+  cwdToTabName,
 
   // Configuration
   config,

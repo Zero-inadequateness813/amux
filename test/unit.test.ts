@@ -1,9 +1,11 @@
 import { describe, test } from "node:test";
 import { strict as assert } from "node:assert";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import {
   stripAnsi, normalizeKey, validatePanelName, socketPath, config, clampTimeout,
   detectEnd, detectInputWait, InvalidPanelName, AmuxError, INTERACTIVE_PROMPT_RE,
-  SUCCESS_RE, FAIL_RE, MAX_TIMEOUT, rejectNesting,
+  SUCCESS_RE, FAIL_RE, MAX_TIMEOUT, rejectNesting, cwdToSessionPath, cwdToTabName,
 } from "../src/amux.ts";
 
 describe("stripAnsi", () => {
@@ -252,5 +254,51 @@ describe("rejectNesting", () => {
     assert.doesNotThrow(() => rejectNesting("npm test"));
     assert.doesNotThrow(() => rejectNesting("echo hello"));
     assert.doesNotThrow(() => rejectNesting("ls -la"));
+  });
+});
+
+describe("cwdToSessionPath", () => {
+  test("finds git root from project dir", () => {
+    // This test repo has .git at project root
+    const root = cwdToSessionPath(process.cwd());
+    assert.ok(root.length > 0);
+    assert.ok(existsSync(join(root, ".git")), `${root} should have .git`);
+  });
+
+  test("finds git root from subdirectory", () => {
+    const subdir = join(process.cwd(), "src");
+    const root = cwdToSessionPath(subdir);
+    assert.equal(root, cwdToSessionPath(process.cwd()));
+  });
+
+  test("returns cwd when no git root found", () => {
+    assert.equal(cwdToSessionPath("/tmp"), "/tmp");
+  });
+});
+
+describe("cwdToTabName", () => {
+  test("format is basename-hash", () => {
+    const name = cwdToTabName("/tmp");
+    assert.match(name, /^[a-zA-Z0-9_-]+-[a-f0-9]{4}$/);
+  });
+
+  test("basename truncated to 8 chars", () => {
+    const name = cwdToTabName("/some/very-long-directory-name-here");
+    const [base] = name.split("-");
+    assert.ok(base.length <= 8, `base "${base}" should be <= 8 chars`);
+  });
+
+  test("same path gives same name", () => {
+    assert.equal(cwdToTabName("/tmp"), cwdToTabName("/tmp"));
+  });
+
+  test("different paths give different names", () => {
+    assert.notEqual(cwdToTabName("/tmp"), cwdToTabName("/var"));
+  });
+
+  test("subdirectories resolve to same session via git root", () => {
+    const root = cwdToTabName(process.cwd());
+    const sub = cwdToTabName(join(process.cwd(), "src"));
+    assert.equal(root, sub, "project root and src/ should share a session");
   });
 });

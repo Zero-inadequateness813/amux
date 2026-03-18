@@ -260,7 +260,7 @@ export async function ensureSession(): Promise<void> {
  * Uses: basename[0:8]-hash[0:4]  (hash of the full resolved path).
  * Example: /Users/me/src/my-project → my-proje-a3f1
  */
-function cwdToSessionPath(cwd: string): string {
+export function cwdToSessionPath(cwd: string): string {
   const abs = resolve(cwd);
   // Walk up to 2 parents looking for .git
   let dir = abs;
@@ -275,7 +275,7 @@ function cwdToSessionPath(cwd: string): string {
   return abs;  // no git root found, use cwd as-is
 }
 
-function cwdToTabName(cwd: string): string {
+export function cwdToTabName(cwd: string): string {
   const sessionPath = cwdToSessionPath(cwd);
   const name = (basename(sessionPath) || "root")
     .replace(/[^a-zA-Z0-9_-]/g, "-")

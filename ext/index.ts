@@ -25,6 +25,7 @@ import {
   run as amuxRun, tail as amuxTail, sendKeys as amuxSendKeys,
   kill as amuxKill, list as amuxList, panels as amuxPanels,
   panelLogPath, panelCwd, ensurePanel, rejectNesting, config,
+  cwdToTabName,
   type RunResult,
 } from "../src/amux.ts";
 
@@ -59,6 +60,7 @@ interface PanelState {
   hot: boolean;
   lastActivityMs: number;
   cwd: string | undefined;
+  tab: string | undefined;  // session tab name from .tab sidecar
 }
 
 const STALE_MS = 3 * 60 * 1000;
@@ -95,7 +97,9 @@ function discoverAllPanels(): PanelState[] {
       } catch {}
       let cwd: string | undefined;
       try { cwd = readFileSync(join(PANEL_DIR, `${name}.cwd`), "utf-8").trim() || undefined; } catch {}
-      panels.push({ name, hot, lastActivityMs, cwd });
+      let tab: string | undefined;
+      try { tab = readFileSync(join(PANEL_DIR, `${name}.tab`), "utf-8").trim() || undefined; } catch {}
+      panels.push({ name, hot, lastActivityMs, cwd, tab });
     }
     return panels.sort((a, b) => a.name.localeCompare(b.name));
   } catch { return []; }
@@ -135,7 +139,11 @@ function stopWatching(): void {
 }
 
 function refreshTabBar(): void {
-  trailCachedPanels = discoverAllPanels();
+  const allPanels = discoverAllPanels();
+  // Filter to only panels in this pi session's session (tab)
+  trailCachedPanels = currentSessionTab
+    ? allPanels.filter(p => p.tab === currentSessionTab)
+    : allPanels;
   if (trailPanel) {
     if (!trailCachedPanels.some((p) => p.name === trailPanel)) {
       trailPanel = null;
@@ -154,8 +162,9 @@ function refreshTabBar(): void {
 
 let trailPanel: string | null = null;
 let trailRefreshTimer: ReturnType<typeof setInterval> | null = null;
-let trailCachedPanels: PanelState[] = [];
+let trailCachedPanels: PanelState[] = [];  // filtered to current session only
 let trailCachedOutput: string[] = [];
+let currentSessionTab: string | null = null;  // tab name for this pi session's cwd
 let trailScrollOffset = 0;  // 0 = auto-follow (show latest), >0 = lines scrolled up
 let trailTotalLines = 0;    // total lines available in log
 let trailPinned = false;    // true when user has scrolled up
@@ -331,15 +340,20 @@ export default function (pi: ExtensionAPI) {
 
   // --- lifecycle ---
 
+  function updateSessionTab(ctx: ExtensionContext): void {
+    currentSessionTab = cwdToTabName(ctx.cwd || process.cwd());
+  }
+
   pi.on("session_start", (_event, ctx) => {
     lastCtx = ctx;
+    updateSessionTab(ctx);
     startWatching(ctx);
     refreshTabBar();
     startTrailRefresh(ctx);
   });
-  pi.on("session_switch", (_event, ctx) => { lastCtx = ctx; startWatching(ctx); });
+  pi.on("session_switch", (_event, ctx) => { lastCtx = ctx; updateSessionTab(ctx); startWatching(ctx); });
   pi.on("session_shutdown", () => { stopWatching(); stopTrailRefresh(); });
-  pi.on("turn_end", (_event, ctx) => { lastCtx = ctx; });
+  pi.on("turn_end", (_event, ctx) => { lastCtx = ctx; updateSessionTab(ctx); });
 
   // --- ⌥1..9 toggle trailing ---
 
@@ -347,8 +361,10 @@ export default function (pi: ExtensionAPI) {
     pi.registerShortcut(Key.alt(String(i) as any), {
       description: `Toggle trailing for amux panel ${i}`,
       handler: async (ctx) => {
-        const all = discoverAllPanels();
-        if (i - 1 >= all.length) { if (all.length === 0) ctx.ui.notify("No amux panels", "info"); return; }
+        updateSessionTab(ctx);
+        refreshTabBar();
+        const all = trailCachedPanels;
+        if (i - 1 >= all.length) { if (all.length === 0) ctx.ui.notify("No amux panels in this session", "info"); return; }
         toggleTrail(ctx, all[i - 1].name);
       },
     });
@@ -696,20 +712,20 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("amux", {
     description: "Manage amux \u2014 /amux <panel> (trail), /amux (toggle trail)",
     handler: async (args, ctx) => {
+      updateSessionTab(ctx);
+      refreshTabBar();
       const sub = args.trim();
       if (sub) {
-        const all = discoverAllPanels();
-        const match = all.find((p) => p.name === sub);
+        const match = trailCachedPanels.find((p) => p.name === sub);
         if (match) { showTrail(ctx, match.name); return; }
-        // Not an existing panel \u2014 create and trail
+        // Not an existing panel — create and trail
         await ensurePanel(sub);
         showTrail(ctx, sub);
         return;
       }
-      const all = discoverAllPanels();
-      if (all.length === 0) { ctx.ui.notify("No amux panels", "info"); return; }
+      if (trailCachedPanels.length === 0) { ctx.ui.notify("No amux panels in this session", "info"); return; }
       if (trailPanel) hideTrail(ctx);
-      else showTrail(ctx, (all.find((p) => p.hot) || all[0]).name);
+      else showTrail(ctx, (trailCachedPanels.find((p) => p.hot) || trailCachedPanels[0]).name);
     },
   });
 }
